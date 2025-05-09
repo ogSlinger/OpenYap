@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <iostream>
+#include <cstdint>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -19,6 +20,11 @@ private:
     AVFormatContext* output_ctx;
     int video_stream_idx;
     int audio_stream_idx;
+
+    float rms_volume;
+    int rms_nb_samples;
+    int rms_channels;
+
     AVCodecContext* input_audio_codec_ctx;
     AVCodecContext* output_audio_format_ctx;
     AVPacket* packet;
@@ -32,16 +38,20 @@ private:
     };
     AudioSegment current_segment;
     std::vector<AudioSegment> soundProfile;
+
+    float volume;
     float volume_threshold_db;
-    float dead_space_buffer;
+    int64_t dead_space_buffer;
+    int64_t pts;
+    bool is_audible;
     
 
 public:
     VideoManager(const char* input_file, const char* output_file);
     ~VideoManager();
-    void validateFileExists();
+    void openInput();
     void populateFormatContext();
-    void getAudioStream();
+    void getAudioStreamIndex();
     const AVCodec* getAudioCodec();
     void setAudioCodec();
     void copyAudioCodecParams();

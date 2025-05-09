@@ -13,9 +13,8 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
     this->video_stream_idx = -1;
     this->audio_stream_idx = -1;
 
-    this->frame = nullptr;
-
     this->dead_space_buffer = 0;
+    this->volume = 0;
     this->volume_threshold_db = -40.0f;
 
     this->current_segment.start_pts = AV_NOPTS_VALUE;
@@ -23,16 +22,41 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
     this->current_segment.time_base = { 1, 1000 }; // Default millisecond time base
     this->current_segment.keep = false;
 
-    av_init_packet(packet);
+    this->rms_volume = 0.0f;
+    this->rms_nb_samples = 0;
+    this->rms_channels = 0;
+
+    this->pts = 0;
+    this->is_audible = false;
+
+    this->packet = av_packet_alloc();
+    this->frame = av_frame_alloc();
+
+    if (!this->frame) {
+        throw std::runtime_error("Could not allocate frame.");
+    }
+    if (!this->packet) {
+        throw std::runtime_error("Could not allocate packet.");
+    }
 }
 
 
 VideoManager::~VideoManager() {
-
+    // FFMPEG Cleanup
+    if (this->input_audio_codec_ctx) {
+        avcodec_free_context(&this->input_audio_codec_ctx);
+    }
+    avformat_close_input(&this->format_ctx);
+    if (this->packet) {
+        av_packet_free(&this->packet);  // Frees both the packet and its contents
+    }
+    if (this->frame) {
+        av_frame_free(&this->frame);  // Frees both the frame structure and its contents
+    }
 }
 
 
-void VideoManager::validateFileExists() {
+void VideoManager::openInput() {
     if (avformat_open_input(&this->format_ctx, this->input_file, nullptr, nullptr) < 0) {
         throw std::runtime_error("Could not open input file");
     }
@@ -41,9 +65,7 @@ void VideoManager::validateFileExists() {
 
 void VideoManager::populateFormatContext() {
     // Open the input file and populate the format context with file information
-    if (avformat_open_input(&this->format_ctx, this->input_file, nullptr, nullptr) < 0) {
-        throw std::runtime_error("Could not open input file: ");
-    }
+    this->openInput();
 
     // Read stream information from the file (detect streams, codecs, etc.)
     if (avformat_find_stream_info(format_ctx, nullptr) < 0) {
@@ -52,7 +74,7 @@ void VideoManager::populateFormatContext() {
 }
 
 
-void VideoManager::getAudioStream() {
+void VideoManager::getAudioStreamIndex() {
     this->audio_stream_idx = -1;
     for (unsigned int i = 0; i < this->format_ctx->nb_streams; i++) {
         if (this->format_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
@@ -153,12 +175,9 @@ AVFrame* VideoManager::frameAlloc() {
 
 void VideoManager::buildSoundProfile() {
     try {
-        this->validateFileExists();
         this->populateFormatContext();
-        this->getAudioStream();
-        this->getAudioCodec();
+        this->getAudioStreamIndex();
         this->setAudioCodec();
-        this->getAudioStream();
         this->copyAudioCodecParams();
         this->openAudioCodec();
     }
@@ -166,42 +185,46 @@ void VideoManager::buildSoundProfile() {
         std::cerr << "Error: " << e.what() << std::endl;
     }
 
+
+    //Convert dead_space_buffer to time base
+    int64_t dead_space_buffer_pts = av_rescale_q(this->dead_space_buffer,
+        { 1, 1000 },
+        this->format_ctx->streams[this->audio_stream_idx]->time_base);
+
     // Initialize the current segment
     this->current_segment.start_pts = AV_NOPTS_VALUE;
     this->current_segment.keep = false;
 
     // Read packets and analyze audio
-    AVPacket packet;
-    AVFrame* frame = av_frame_alloc();
 
-    while (av_read_frame(this->format_ctx, &packet) >= 0) {
+    while (av_read_frame(this->format_ctx, this->packet) >= 0) {
         // Only process audio packets
-        if (packet.stream_index == this->audio_stream_idx) {
+        if (this->packet->stream_index == this->audio_stream_idx) {
             // Decode packet
-            if (avcodec_send_packet(this->input_audio_codec_ctx, &packet) >= 0) {
-                while (avcodec_receive_frame(this->input_audio_codec_ctx, frame) >= 0) {
+            if (avcodec_send_packet(this->input_audio_codec_ctx, this->packet) >= 0) {
+                while (avcodec_receive_frame(this->input_audio_codec_ctx, this->frame) >= 0) {
                     // Calculate audio volume (RMS)
-                    float volume = calculateRMS(frame, this->input_audio_codec_ctx);
+                    this->volume = calculateRMS(this->frame, this->input_audio_codec_ctx);
 
                     // Get pts value for this frame
-                    int64_t pts = frame->pts;
-                    if (pts == AV_NOPTS_VALUE) {
-                        pts = frame->best_effort_timestamp;
+                    this->pts = this->frame->pts;
+                    if (this->pts == AV_NOPTS_VALUE) {
+                        this->pts = this->frame->best_effort_timestamp;
                     }
 
                     // Check if above threshold
-                    bool is_audible = (volume >= this->volume_threshold_db);
+                    this->is_audible = (this->volume >= this->volume_threshold_db);
 
                     // State transition logic
-                    if (is_audible) {
+                    if (this->is_audible) {
                         // Start a new segment to keep
                         if (this->current_segment.start_pts != AV_NOPTS_VALUE) {
                             // Finish previous segment
-                            this->current_segment.end_pts = pts;
+                            this->current_segment.end_pts = this->pts;
 
                             //If the previous segment's endpoint + dead space buffer > the start of next buffer, just reassign previous segment endpoint
                             if (!this->soundProfile.empty() &&
-                                (this->soundProfile.back().end_pts + this->dead_space_buffer) > this->current_segment.start_pts) {
+                                (this->soundProfile.back().end_pts + (dead_space_buffer_pts * 2)) > this->current_segment.start_pts) {
                                 this->soundProfile.back().end_pts = this->current_segment.end_pts;
                             }
                             else {
@@ -210,7 +233,7 @@ void VideoManager::buildSoundProfile() {
                         }
 
                         // Start new audible segment
-                        this->current_segment.start_pts = pts;
+                        this->current_segment.start_pts = this->pts;
 
                         // Add null check before accessing the time_base
                         if (this->format_ctx && this->audio_stream_idx >= 0 &&
@@ -225,20 +248,19 @@ void VideoManager::buildSoundProfile() {
                         }
                         this->current_segment.keep = true;
                     }
-                    else if (!is_audible && this->current_segment.keep) {
+
+                    else if (!this->is_audible && this->current_segment.keep) {
                         // End of audible segment
-                        this->current_segment.end_pts = pts;
+                        this->current_segment.end_pts = this->pts;
                         this->soundProfile.push_back(this->current_segment);
 
                         // Start new silent segment
-                        this->current_segment.start_pts = pts;
+                        this->current_segment.start_pts = this->pts;
                         this->current_segment.keep = false;
-                    }
+                    }                                   
                 }
             }
         }
-
-        av_packet_unref(&packet);
     }
 
     // Add the last segment if needed
@@ -248,19 +270,18 @@ void VideoManager::buildSoundProfile() {
     }
 
     // Cleanup
-    av_frame_free(&frame);
-    avcodec_free_context(&this->input_audio_codec_ctx);
-    avformat_close_input(&this->format_ctx);
+    av_packet_unref(this->packet);
+    av_frame_unref(this->frame);
 }
 
 float VideoManager::calculateRMS(AVFrame* frame, AVCodecContext* audio_codec_ctx) {
-    float volume = 0.0f;
-    int nb_samples = frame->nb_samples;
-    int channels = audio_codec_ctx->ch_layout.nb_channels;
+    this->rms_volume = 0.0f;
+    this->rms_nb_samples = frame->nb_samples;
+    this->rms_channels = audio_codec_ctx->ch_layout.nb_channels;
 
     // Sum the squares of all samples
-    for (int i = 0; i < nb_samples; i++) {
-        for (int ch = 0; ch < channels; ch++) {
+    for (int i = 0; i < this->rms_nb_samples; i++) {
+        for (int ch = 0; ch < this->rms_channels; ch++) {
             float sample = 0.0f;
 
             // Handle different sample formats
@@ -274,16 +295,16 @@ float VideoManager::calculateRMS(AVFrame* frame, AVCodecContext* audio_codec_ctx
                 sample = ((int32_t*)frame->data[ch])[i] / 2147483648.0f;
             }
 
-            volume += sample * sample;
+            this->rms_volume += sample * sample;
         }
     }
 
     // Calculate RMS
-    if (nb_samples * channels > 0) {
-        volume = sqrt(volume / (nb_samples * channels));
+    if (this->rms_nb_samples * this->rms_channels > 0) {
+        this->rms_volume = sqrt(this->rms_volume / (this->rms_nb_samples * this->rms_channels));
     }
 
-    return volume;
+    return this->rms_volume;
 }
 
 
