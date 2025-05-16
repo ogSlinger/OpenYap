@@ -16,28 +16,28 @@ class VideoManager {
 private:
     const char* input_file;
     const char* output_file;
-    AVFormatContext* format_ctx;
+    AVFormatContext* input_ctx;
     AVFormatContext* output_ctx;
-    int video_stream_idx;
+    AVCodecContext* video_ctx;
+    AVCodecContext* audio_ctx;
     int audio_stream_idx;
+    int video_stream_idx;
 
     float rms_volume;
     int rms_nb_samples;
     int rms_channels;
 
-    AVCodecContext* input_audio_codec_ctx;
-    AVCodecContext* output_audio_format_ctx;
     AVPacket* packet;
     AVFrame* frame;
     
-    struct AudioSegment {
+    struct VideoSegment {
         int64_t start_pts;     // Presentation timestamp (start)
         int64_t end_pts;       // Presentation timestamp (end)
         AVRational time_base;  // Time base for accurate timing
         bool keep;             // Flag to indicate if segment should be kept
     };
-    AudioSegment current_segment;
-    std::vector<AudioSegment> soundProfile;
+    VideoSegment current_segment;
+    std::vector<VideoSegment> profile;
 
     float volume;
     float volume_threshold_db;
@@ -50,8 +50,9 @@ public:
     VideoManager(const char* input_file, const char* output_file);
     ~VideoManager();
     void openInput();
-    void populateFormatContext();
-    void getAudioStreamIndex();
+    void setInputContext();
+    void setAudioStreamIndex(int index);
+    void setVideoStreamIndex(int index);
     const AVCodec* getAudioCodec();
     void setAudioCodec();
     void copyAudioCodecParams();
@@ -61,7 +62,8 @@ public:
     void openOutputFile();
     void writeFileHeader();
     AVFrame* frameAlloc();
-    void buildSoundProfile();
+    void setVideoContext();
+    void setAudiocontext();
+    void buildVideo();
     float calculateRMS(AVFrame* frame, AVCodecContext* audio_codec_ctx);
-    void parseInputVideo();
 };

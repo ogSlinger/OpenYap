@@ -1,4 +1,5 @@
 #include <iostream>  // Include standard C++ input-output library for console operations
+#include "videomanager.h"
 extern "C" {  // Use C linkage for FFmpeg libraries since they're written in C
 #include <libavcodec/avcodec.h>  // Include FFmpeg codec library for encoding/decoding
 #include <libavformat/avformat.h>  // Include FFmpeg format library for container formats (MP4, MKV, etc.)
@@ -8,7 +9,9 @@ extern "C" {  // Use C linkage for FFmpeg libraries since they're written in C
 }
 
 int main(int argc, char* argv[]) {
-
+    VideoManager vm("input.mp4", "output.mp4");
+    vm.buildSoundProfile();
+    vm.createVideo();
 
     return 0;  // Return success code
 }
