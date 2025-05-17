@@ -12,6 +12,9 @@
 input.mp4
 output.mp4
 
+# Ignore MP4 files
+*.mp4
+
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 
