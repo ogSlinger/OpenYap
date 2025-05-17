@@ -29,20 +29,26 @@ private:
 
     AVPacket* packet;
     AVFrame* frame;
+    double packets_per_sec;
+    int64_t bufferSize;
     
     struct VideoSegment {
         int64_t start_pts;     // Presentation timestamp (start)
         int64_t end_pts;       // Presentation timestamp (end)
-        AVRational time_base;  // Time base for accurate timing
         bool keep;             // Flag to indicate if segment should be kept
+
+        VideoSegment()
+            : start_pts(-1), end_pts(-1), keep(false) {}
+        VideoSegment(int64_t start, int64_t end, bool keep_flag) 
+            : start_pts(start), end_pts(end), keep(keep_flag){}
     };
     VideoSegment current_segment;
-    std::vector<VideoSegment> profile;
+    std::vector<VideoSegment*> outputQueue;
 
     float volume;
     float volume_threshold_db;
     int64_t dead_space_buffer;
-    int64_t pts;
+    int64_t previous_end_pts;
     bool is_audible;
     
 
@@ -64,6 +70,10 @@ public:
     AVFrame* frameAlloc();
     void setVideoContext();
     void setAudiocontext();
+    void setPacketsPerSec();
+    std::vector<VideoSegment*> createOutputBuffer();
+    void setBufferPrelude(bool setter, std::vector<VideoSegment*> *outputBuffer);
+    void readInPacket(std::vector<VideoSegment*> *outputBuffer, VideoSegment* segment);
     void buildVideo();
     float calculateRMS(AVFrame* frame, AVCodecContext* audio_codec_ctx);
 };

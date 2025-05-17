@@ -13,20 +13,21 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
     this->video_ctx = nullptr;
     this->audio_ctx = nullptr;
 
+    this->packets_per_sec = -1;
+    this->bufferSize = -1;
     this->dead_space_buffer = 5;
     this->volume = 0;
     this->volume_threshold_db = -40.0f;
 
     this->current_segment.start_pts = AV_NOPTS_VALUE;
     this->current_segment.end_pts = AV_NOPTS_VALUE;
-    this->current_segment.time_base = { 1, 1000 }; // Default millisecond time base
     this->current_segment.keep = false;
 
     this->rms_volume = 0.0f;
     this->rms_nb_samples = 0;
     this->rms_channels = 0;
 
-    this->pts = 0;
+    this->previous_end_pts = 0;
     this->is_audible = false;
 
     this->packet = av_packet_alloc();
@@ -215,6 +216,33 @@ void VideoManager::setAudiocontext() {
     }
 }
 
+void VideoManager::setPacketsPerSec() {
+    this->packets_per_sec = (double)this->video_ctx->time_base.den / this->video_ctx->time_base.num;
+}
+
+
+std::vector<VideoManager::VideoSegment*> VideoManager::createOutputBuffer() {
+    std::vector<VideoSegment*> outputBuffer;
+    this->setPacketsPerSec();
+    this->bufferSize = this->packets_per_sec * this->dead_space_buffer;
+
+    for (int i = 0; i < (bufferSize * 2); i++) {
+        VideoSegment* segment = new VideoSegment();
+        outputBuffer.push_back(segment);
+    }
+}
+
+void VideoManager::setBufferPrelude(bool setter = true, std::vector<VideoSegment*> *outputBuffer) {
+    for (int i = 0; i < this->bufferSize; i++) {
+        if (outputBuffer->at(i)->keep != setter) {
+            outputBuffer->at(i)->keep = setter;
+        }
+    }
+}
+
+void VideoManager::readInPacket(std::vector<VideoSegment*> *outputBuffer, VideoSegment* segment) {
+    outputBuffer->at(outputBuffer->size() - 1) = segment;
+}
 
 void VideoManager::buildVideo() {
     try {
@@ -233,6 +261,8 @@ void VideoManager::buildVideo() {
         return;
     }
 
+    //Generate output buffer
+    std::vector<VideoSegment*> outputBuffer = this->createOutputBuffer();
     /*
         TODO:
         Reader:
@@ -247,20 +277,17 @@ void VideoManager::buildVideo() {
 
     while (av_read_frame(this->input_ctx, this->packet) >= 0) {
         if (packet->stream_index == this->video_stream_idx) {
-            // This is compressed video data
-            printf("Packet size: %d bytes\n", packet->size);
-
-            // Decode it
-            avcodec_send_packet(this->video_ctx, this->packet);
-
-            while (avcodec_receive_frame(this->video_ctx, frame) >= 0) {
-                // Now we have uncompressed pixel data
-            }
+            //Video Packet Read
         }
         else if (packet->stream_index == this->audio_stream_idx) {
+            //Audio Packet Read
 
         }
-        av_packet_unref(packet);
+        else {
+            //Extra Audio/Video Stream Packets Read
+
+        }
+        // TODO: ensure av_packet_unref(packet); and av_packet_free(&this->packet); called before deleting segments
     }
 }
 
@@ -270,11 +297,14 @@ float VideoManager::calculateRMS(AVFrame* frame, AVCodecContext* audio_codec_ctx
     int channels = audio_codec_ctx->ch_layout.nb_channels;
     int nb_samples = frame->nb_samples;
     enum AVSampleFormat fmt = audio_codec_ctx->sample_fmt;
+    const double INT16_MAX_F = 32768.0;        // 2^15
+    const double INT32_MAX_F = 2147483648.0;   // 2^31
 
     // Process all samples based on format
     for (int ch = 0; ch < channels; ch++) {
         for (int s = 0; s < nb_samples; s++) {
             double sample = 0.0;
+            bool valid_sample = true;
 
             // Get sample value based on format
             switch (fmt) {
@@ -283,10 +313,13 @@ float VideoManager::calculateRMS(AVFrame* frame, AVCodecContext* audio_codec_ctx
                 sample = ((float**)frame->extended_data)[ch][s];
                 break;
             case AV_SAMPLE_FMT_S16P:
-                sample = ((int16_t**)frame->extended_data)[ch][s] / 32768.0;
+                sample = ((int16_t**)frame->extended_data)[ch][s] / INT16_MAX_F;
                 break;
             case AV_SAMPLE_FMT_S32P:
-                sample = ((int32_t**)frame->extended_data)[ch][s] / 2147483648.0;
+                sample = ((int32_t**)frame->extended_data)[ch][s] / INT32_MAX_F;
+                break;
+            case AV_SAMPLE_FMT_DBLP:
+                sample = ((double**)frame->extended_data)[ch][s];
                 break;
 
                 // Interleaved formats
@@ -294,32 +327,34 @@ float VideoManager::calculateRMS(AVFrame* frame, AVCodecContext* audio_codec_ctx
                 sample = ((float*)frame->data[0])[s * channels + ch];
                 break;
             case AV_SAMPLE_FMT_S16:
-                sample = ((int16_t*)frame->data[0])[s * channels + ch] / 32768.0;
+                sample = ((int16_t*)frame->data[0])[s * channels + ch] / INT16_MAX_F;
                 break;
             case AV_SAMPLE_FMT_S32:
-                sample = ((int32_t*)frame->data[0])[s * channels + ch] / 2147483648.0;
+                sample = ((int32_t*)frame->data[0])[s * channels + ch] / INT32_MAX_F;
+                break;
+            case AV_SAMPLE_FMT_DBL:
+                sample = ((double*)frame->data[0])[s * channels + ch];
                 break;
 
             default:
-                continue;
+                valid_sample = false;
+                break;
             }
 
-            sum += sample * sample;
-            total_samples++;
+            if (valid_sample) {
+                sum += sample * sample;
+                total_samples++;
+            }
         }
     }
 
     // Calculate RMS
     if (total_samples == 0) {
-        return -100.0;
+        return -100.0f;  // Return minimum dB value if no valid samples
     }
 
     double rms = sqrt(sum / total_samples);
 
-    // Convert to dB
-    if (rms <= 0.0) {
-        return -100.0;
-    }
-
-    return 20.0 * log10(rms);
+    // Convert to dB with a floor of -100dB
+    return (rms > 0.0) ? 20.0f * log10(rms) : -100.0f;
 }
