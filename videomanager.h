@@ -3,6 +3,8 @@
 #include <vector>
 #include <iostream>
 #include <cstdint>
+#include <algorithm>
+#include <ranges>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -35,6 +37,7 @@ private:
     struct VideoSegment {
         int64_t start_pts;     // Presentation timestamp (start)
         int64_t end_pts;       // Presentation timestamp (end)
+        AVPacket* packet;
         bool keep;             // Flag to indicate if segment should be kept
 
         VideoSegment()
@@ -74,6 +77,8 @@ public:
     std::vector<VideoSegment*> createOutputBuffer();
     void setBufferPrelude(bool setter, std::vector<VideoSegment*> *outputBuffer);
     void readInPacket(std::vector<VideoSegment*> *outputBuffer, VideoSegment* segment);
+    void writeOutPacket(std::vector<VideoSegment*> *outputBuffer);
+    void shiftBufferLeft(std::vector<VideoSegment*>* outputBuffer);
     void buildVideo();
     float calculateRMS(AVFrame* frame, AVCodecContext* audio_codec_ctx);
 };

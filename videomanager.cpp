@@ -234,14 +234,44 @@ std::vector<VideoManager::VideoSegment*> VideoManager::createOutputBuffer() {
 
 void VideoManager::setBufferPrelude(bool setter = true, std::vector<VideoSegment*> *outputBuffer) {
     for (int i = 0; i < this->bufferSize; i++) {
-        if (outputBuffer->at(i)->keep != setter) {
-            outputBuffer->at(i)->keep = setter;
+        if (outputBuffer->at(i) != nullptr) {
+            if (outputBuffer->at(i)->keep != setter) {
+                outputBuffer->at(i)->keep = setter;
+            }
         }
     }
 }
 
 void VideoManager::readInPacket(std::vector<VideoSegment*> *outputBuffer, VideoSegment* segment) {
     outputBuffer->at(outputBuffer->size() - 1) = segment;
+}
+
+void VideoManager::writeOutPacket(std::vector<VideoSegment*> *outputBuffer) {
+    if (!outputBuffer->empty()) {
+        if (outputBuffer->front() != nullptr) {
+            av_write_frame(this->output_ctx, outputBuffer->front()->packet);
+        }
+    }
+    else {
+        throw std::runtime_error("Attempted to write packet from an empty output buffer!");
+    }
+}
+
+void VideoManager::shiftBufferLeft(std::vector<VideoSegment*>* outputBuffer) {
+    if (!outputBuffer->empty()) {
+        if (outputBuffer->front() != nullptr) {
+            delete outputBuffer->front();
+            std::shift_left(outputBuffer->begin(), outputBuffer->end(), 1);
+            VideoSegment* segment = new VideoSegment();
+            outputBuffer->back() = segment;
+        }        
+        else {
+            std::shift_left(outputBuffer->begin(), outputBuffer->end(), 1);
+        }
+    }
+    else {
+        throw std::runtime_error("End of output buffer reached");
+    }
 }
 
 void VideoManager::buildVideo() {
