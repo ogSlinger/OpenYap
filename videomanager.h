@@ -52,6 +52,7 @@ private:
     float volume_threshold_db;
     int64_t dead_space_buffer;
     int64_t previous_end_pts;
+    int64_t packet_pts_variance;
     bool is_audible;
     
 
@@ -77,8 +78,10 @@ public:
     std::vector<VideoSegment*> createOutputBuffer();
     void setBufferPrelude(bool setter, std::vector<VideoSegment*> *outputBuffer);
     void readInPacket(std::vector<VideoSegment*> *outputBuffer, VideoSegment* segment);
+    void updatePacketPTS(std::vector<VideoSegment*>* outputBuffer);
     void writeOutPacket(std::vector<VideoSegment*> *outputBuffer);
     void shiftBufferLeft(std::vector<VideoSegment*>* outputBuffer);
     void buildVideo();
+    bool profilePacketAudio(const AVPacket* original_packet);
     float calculateRMS(AVFrame* frame, AVCodecContext* audio_codec_ctx);
 };

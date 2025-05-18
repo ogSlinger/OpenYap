@@ -28,6 +28,7 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
     this->rms_channels = 0;
 
     this->previous_end_pts = 0;
+    this->packet_pts_variance = 0;
     this->is_audible = false;
 
     this->packet = av_packet_alloc();
@@ -246,10 +247,26 @@ void VideoManager::readInPacket(std::vector<VideoSegment*> *outputBuffer, VideoS
     outputBuffer->at(outputBuffer->size() - 1) = segment;
 }
 
+void VideoManager::updatePacketPTS(std::vector<VideoSegment*> *outputBuffer) {
+    if (this->previous_end_pts != INT64_MAX) {
+        this->packet_pts_variance = outputBuffer->front()->end_pts - outputBuffer->front()->start_pts;
+        outputBuffer->front()->start_pts = this->previous_end_pts++;
+        outputBuffer->front()->end_pts = outputBuffer->front()->start_pts + this->packet_pts_variance;
+        this->previous_end_pts = outputBuffer->front()->end_pts;
+    }
+    else {
+        std::cerr << "PTS stopped updating, potential overflow error." << std::endl;
+    }
+}
+
 void VideoManager::writeOutPacket(std::vector<VideoSegment*> *outputBuffer) {
     if (!outputBuffer->empty()) {
         if (outputBuffer->front() != nullptr) {
-            av_write_frame(this->output_ctx, outputBuffer->front()->packet);
+            if (outputBuffer->front()->keep) {
+                updatePacketPTS(outputBuffer);
+                av_write_frame(this->output_ctx, outputBuffer->front()->packet);
+                //TODO: Update PTS discrepency, be sure to check for nullptr
+            }
         }
     }
     else {
@@ -260,6 +277,7 @@ void VideoManager::writeOutPacket(std::vector<VideoSegment*> *outputBuffer) {
 void VideoManager::shiftBufferLeft(std::vector<VideoSegment*>* outputBuffer) {
     if (!outputBuffer->empty()) {
         if (outputBuffer->front() != nullptr) {
+            av_packet_free(&outputBuffer->front()->packet);
             delete outputBuffer->front();
             std::shift_left(outputBuffer->begin(), outputBuffer->end(), 1);
             VideoSegment* segment = new VideoSegment();
@@ -274,51 +292,23 @@ void VideoManager::shiftBufferLeft(std::vector<VideoSegment*>* outputBuffer) {
     }
 }
 
-void VideoManager::buildVideo() {
-    try {
-        avformat_close_input(&this->input_ctx);
-        this->setInputContext();
-        this->setAudioStreamIndex();
-        this->setVideoStreamIndex();
-        this->createOutputContext();
-        this->createOutputStreams();
-        this->setVideoContext();
-        this->openOutputFile();
-        this->writeFileHeader();
-    }
-    catch (const std::exception& e) {
-        std::cerr << "Setup error: " << e.what() << std::endl;
-        return;
+bool VideoManager::profilePacketAudio(const AVPacket* original_packet) {
+    AVPacket* packet_copy = av_packet_alloc();
+    av_packet_ref(packet_copy, original_packet);
+    AVFrame* frame = av_frame_alloc();
+    bool keep = false;
+
+    while (avcodec_receive_frame(this->audio_ctx, frame)) {
+        if (this->volume_threshold_db >= calculateRMS(frame, this->audio_ctx)) {
+            keep = true;
+            break;
+        }
     }
 
-    //Generate output buffer
-    std::vector<VideoSegment*> outputBuffer = this->createOutputBuffer();
-    /*
-        TODO:
-        Reader:
-        Read in packet
-        Parse RMS of audio in packet
-        Append packet into struct passed to queue for output, set "keep" if threshold met
-        In queue:
-        Queue size dependant on silence buffer size, instantiate in constructor
-        Struct should have: packet pointer, and a "keep" bool, start_pts, end_pts
-        Function needed to mark the frames from index 0 -> prelude_buffer_index as "keep", decrement a counter as it sees !keep and then resume parse process
-    */
-
-    while (av_read_frame(this->input_ctx, this->packet) >= 0) {
-        if (packet->stream_index == this->video_stream_idx) {
-            //Video Packet Read
-        }
-        else if (packet->stream_index == this->audio_stream_idx) {
-            //Audio Packet Read
-
-        }
-        else {
-            //Extra Audio/Video Stream Packets Read
-
-        }
-        // TODO: ensure av_packet_unref(packet); and av_packet_free(&this->packet); called before deleting segments
-    }
+    av_frame_free(&frame);
+    av_packet_unref(packet_copy);
+    av_packet_free(&packet_copy);
+    return keep;
 }
 
 float VideoManager::calculateRMS(AVFrame* frame, AVCodecContext* audio_codec_ctx) {
@@ -387,4 +377,51 @@ float VideoManager::calculateRMS(AVFrame* frame, AVCodecContext* audio_codec_ctx
 
     // Convert to dB with a floor of -100dB
     return (rms > 0.0) ? 20.0f * log10(rms) : -100.0f;
+}
+
+void VideoManager::buildVideo() {
+    try {
+        avformat_close_input(&this->input_ctx);
+        this->setInputContext();
+        this->setAudioStreamIndex();
+        this->setVideoStreamIndex();
+        this->createOutputContext();
+        this->createOutputStreams();
+        this->setVideoContext();
+        this->openOutputFile();
+        this->writeFileHeader();
+    }
+    catch (const std::exception& e) {
+        std::cerr << "Setup error: " << e.what() << std::endl;
+        return;
+    }
+
+    //Generate output buffer
+    std::vector<VideoSegment*> outputBuffer = this->createOutputBuffer();
+    /*
+        TODO:
+        Reader:
+        Read in packet
+        Parse RMS of audio in packet
+        Append packet into struct passed to queue for output, set "keep" if threshold met
+        In queue:
+        Queue size dependant on silence buffer size, instantiate in constructor
+        Struct should have: packet pointer, and a "keep" bool, start_pts, end_pts
+        Function needed to mark the frames from index 0 -> prelude_buffer_index as "keep", decrement a counter as it sees !keep and then resume parse process
+    */
+
+    while (av_read_frame(this->input_ctx, this->packet) >= 0) {
+        if (packet->stream_index == this->video_stream_idx) {
+            //Video Packet Read
+        }
+        else if (packet->stream_index == this->audio_stream_idx) {
+            //Audio Packet Read
+
+        }
+        else {
+            //Extra Audio/Video Stream Packets Read
+
+        }
+        // TODO: ensure av_packet_unref(packet); and av_packet_free(&this->packet); called before deleting segments
+    }
 }
