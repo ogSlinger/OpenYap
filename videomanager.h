@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <algorithm>
 #include <ranges>
+#include <queue>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -20,7 +21,7 @@ private:
     const char* output_file;
     AVFormatContext* input_ctx;
     AVFormatContext* output_ctx;
-    AVCodecContext* video_ctx;
+    AVCodecContext* video_codec_ctx;
     AVCodecContext* audio_ctx;
     int audio_stream_idx;
     int video_stream_idx;
@@ -35,15 +36,14 @@ private:
     int64_t bufferSize;
     
     struct VideoSegment {
-        int64_t start_pts;     // Presentation timestamp (start)
-        int64_t end_pts;       // Presentation timestamp (end)
-        AVPacket* packet;
+        int64_t start_pts;     
+        std::queue<AVPacket*>* queue;
         bool keep;             // Flag to indicate if segment should be kept
 
         VideoSegment()
-            : start_pts(-1), end_pts(-1), keep(false) {}
-        VideoSegment(int64_t start, int64_t end, bool keep_flag) 
-            : start_pts(start), end_pts(end), keep(keep_flag){}
+            : start_pts(-1), queue(nullptr), keep(false) {}
+        VideoSegment(int64_t start, std::queue<AVPacket*>* queue_ptr, bool keep_flag) 
+            : start_pts(start), queue(queue_ptr), keep(keep_flag){}
     };
     VideoSegment current_segment;
     std::vector<VideoSegment*> outputQueue;
@@ -71,17 +71,12 @@ public:
     void createOutputStreams();
     void openOutputFile();
     void writeFileHeader();
-    AVFrame* frameAlloc();
     void setVideoContext();
     void setAudiocontext();
     void setPacketsPerSec();
-    std::vector<VideoSegment*> createOutputBuffer();
-    void setBufferPrelude(bool setter, std::vector<VideoSegment*> *outputBuffer);
-    void readInPacket(std::vector<VideoSegment*> *outputBuffer, VideoSegment* segment);
-    void updatePacketPTS(std::vector<VideoSegment*>* outputBuffer);
-    void writeOutPacket(std::vector<VideoSegment*> *outputBuffer);
-    void shiftBufferLeft(std::vector<VideoSegment*>* outputBuffer);
+    double getPacketsPerSecond();
     void buildVideo();
     bool profilePacketAudio(const AVPacket* original_packet);
     float calculateRMS(AVFrame* frame, AVCodecContext* audio_codec_ctx);
+    void writeOutLoop();
 };
