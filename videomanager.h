@@ -33,7 +33,9 @@ private:
     AVPacket* packet;
     AVFrame* frame;
     double packets_per_sec;
-    int64_t bufferSize;
+    int64_t output_buffer_capacity;
+    unsigned char writeOutBufferState;
+    int reached_end;
     
     struct VideoSegment {
         int64_t start_pts;     
@@ -46,7 +48,7 @@ private:
             : start_pts(start), queue(), keep(keep_flag){}
     };
     VideoSegment current_segment;
-    std::vector<VideoSegment*> outputQueue;
+    std::queue<std::queue<VideoSegment*>> outputQueue;
 
     float volume;
     float volume_threshold_db;
@@ -78,6 +80,12 @@ public:
     void buildVideo();
     bool profilePacketAudio(const AVPacket* original_packet);
     float calculateRMS(AVFrame* frame, AVCodecContext* audio_codec_ctx);
+    void writeHalfQueue(std::queue<VideoSegment*>* outputBuffer);
+    void writeEntireQueue(std::queue<VideoSegment*>* outputBuffer);
+    void emptyOutputQueue();
+    void invokeQueueSM();
+    void writeToOutputQueue(std::queue<VideoSegment*> outputBuffer);
+    void emptyOutputBuffer(std::queue<VideoSegment*>* outputBuffer);
     void writeOutputBuffer(std::queue<VideoSegment*>* outputBuffer, VideoSegment* current_segment);
     void writeOutLoop();
 };

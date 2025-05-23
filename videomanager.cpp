@@ -14,14 +14,15 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 	this->audio_ctx = nullptr;
 
 	this->packets_per_sec = -1;
-	this->bufferSize = -1;
+	this->output_buffer_capacity = -1;
 	this->dead_space_buffer = 5;
 	this->volume = 0;
 	this->volume_threshold_db = -40.0f;
 
 	this->current_segment.start_pts = AV_NOPTS_VALUE;
-	this->current_segment.end_pts = AV_NOPTS_VALUE;
 	this->current_segment.keep = false;
+	this->writeOutBufferState = { false, false };
+	this->reached_end = 0;
 
 	this->rms_volume = 0.0f;
 	this->rms_nb_samples = 0;
@@ -207,6 +208,7 @@ void VideoManager::setAudiocontext() {
 
 void VideoManager::setPacketsPerSec() {
 	this->packets_per_sec = this->getPacketsPerSecond();
+	this->output_buffer_capacity = this->packets_per_sec * dead_space_buffer;
 }
 
 double VideoManager::getPacketsPerSecond() {
@@ -310,23 +312,81 @@ float VideoManager::calculateRMS(AVFrame* frame, AVCodecContext* audio_codec_ctx
 	return (rms > 0.0) ? 20.0f * log10(rms) : -100.0f;
 }
 
-void VideoManager::writeOutputBuffer(std::queue<VideoSegment*> *outputBuffer, VideoSegment* current_segment) {
-	outputBuffer->push(current_segment);
+void VideoManager::writeHalfQueue(std::queue<VideoSegment*>* outputBuffer) {
+	// Be sure to call free on packets and delete on videosegments!
+}
+
+void VideoManager::writeEntireQueue(std::queue<VideoSegment*>* outputBuffer) {
+	// Be sure to call free on packets and delete on videosegments!
+}
+
+void VideoManager::emptyOutputBuffer(std::queue<VideoSegment*>* outputBuffer) {
+	while (!outputBuffer->empty()) {
+		while (!outputBuffer->front()->queue.empty()) {
+			av_packet_free(&outputBuffer->front()->queue.front());
+			outputBuffer->front()->queue.pop();
+		}
+		delete outputBuffer->front();
+		outputBuffer->pop();
+	}
+}
+
+void VideoManager::emptyOutputQueue() {
+	while (!this->outputQueue.empty()) {
+		this->emptyOutputBuffer(&this->outputQueue.front());
+		this->outputQueue.pop();
+	}
+}
+
+void VideoManager::invokeQueueSM() {
+	//State Machine Writing Output
+	if (!this - outputQueue.size() != output_buffer_capacity * 2) {
+		switch (writeOutBufferState & 0b00000011) {
+		case 0b00:
+			break;
+		case 0b01:
+		case 0b10:
+			break;
+		case 0b11:
+			break;
+		}
+	}
+}
+
+void VideoManager::writeToOutputQueue(std::queue<VideoSegment*> outputBuffer) {
+	if (this->outputQueue.empty()) {
+
+	}
+	else if (this->outputQueue.size() == 1) {
+		this->outputQueue.push(outputBuffer);
+	}
+	else {
+
+	}
+}
+
+void VideoManager::writeOutputBuffer(std::queue<VideoSegment*>* outputBuffer, VideoSegment* current_segment) {
+	if (outputBuffer->size() < this->output_buffer_capacity) {
+		outputBuffer->push(current_segment);
+	}
+	else {
+		this->writeToOutputQueue(*outputBuffer);
+		//TODO: empty FPS buffer
+	}
 }
 
 void VideoManager::writeOutLoop() {
 	VideoSegment* current_segment = nullptr;
 	std::queue<VideoSegment*> outputBuffer;
-	bool create_new_queue = true;
+	bool create_new_queue = true;		//TODO: May not need this.
 	bool volume_detected = false;
 	bool write_to_outputBuffer = false;
-	int reached_end;
 
 	//Loop through the whole input file
-	while ((reached_end = av_read_frame(this->input_ctx, this->packet)) >= 0) {
+	while ((this->reached_end = av_read_frame(this->input_ctx, this->packet)) >= 0) {
 		// If EOF is reached, finish the output
-		if (reached_end == AVERROR_EOF) {
-
+		if (this->reached_end == AVERROR_EOF && !outputBuffer.empty()) {
+			// TODO: Finalize output writing
 		}
 
 		// If packet is video
