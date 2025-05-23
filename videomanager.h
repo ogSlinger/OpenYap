@@ -37,13 +37,13 @@ private:
     
     struct VideoSegment {
         int64_t start_pts;     
-        std::queue<AVPacket*>* queue;
+        std::queue<AVPacket*> queue;
         bool keep;             // Flag to indicate if segment should be kept
 
         VideoSegment()
-            : start_pts(-1), queue(nullptr), keep(false) {}
+            : start_pts(-1), queue(), keep(false) {}
         VideoSegment(int64_t start, std::queue<AVPacket*>* queue_ptr, bool keep_flag) 
-            : start_pts(start), queue(queue_ptr), keep(keep_flag){}
+            : start_pts(start), queue(), keep(keep_flag){}
     };
     VideoSegment current_segment;
     std::vector<VideoSegment*> outputQueue;
@@ -78,5 +78,6 @@ public:
     void buildVideo();
     bool profilePacketAudio(const AVPacket* original_packet);
     float calculateRMS(AVFrame* frame, AVCodecContext* audio_codec_ctx);
+    void writeOutputBuffer(std::queue<VideoSegment*>* outputBuffer, VideoSegment* current_segment);
     void writeOutLoop();
 };
