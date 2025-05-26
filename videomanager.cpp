@@ -21,7 +21,7 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 
 	this->current_segment.start_pts = AV_NOPTS_VALUE;
 	this->current_segment.keep = false;
-	this->writeOutBufferState = { false, false };
+	this->writeOutBufferState = 0;
 	this->reached_end = 0;
 
 	this->rms_volume = 0.0f;
@@ -29,7 +29,7 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 	this->rms_channels = 0;
 
 	this->previous_end_pts = 0;
-	this->packet_pts_variance = 0;
+	this->PTS_offset = 0;
 	this->is_audible = false;
 
 	this->packet = av_packet_alloc();
@@ -340,7 +340,7 @@ void VideoManager::emptyOutputQueue() {
 
 void VideoManager::invokeQueueSM() {
 	//State Machine Writing Output
-	if (!this - outputQueue.size() != output_buffer_capacity * 2) {
+	if (this->outputQueue.size() == output_buffer_capacity * 2) {
 		switch (writeOutBufferState & 0b00000011) {
 		case 0b00:
 			break;
@@ -355,7 +355,7 @@ void VideoManager::invokeQueueSM() {
 
 void VideoManager::writeToOutputQueue(std::queue<VideoSegment*> outputBuffer) {
 	if (this->outputQueue.empty()) {
-
+		this->outputQueue.push(outputBuffer);
 	}
 	else if (this->outputQueue.size() == 1) {
 		this->outputQueue.push(outputBuffer);
@@ -371,16 +371,16 @@ void VideoManager::writeOutputBuffer(std::queue<VideoSegment*>* outputBuffer, Vi
 	}
 	else {
 		this->writeToOutputQueue(*outputBuffer);
-		//TODO: empty FPS buffer
+		//TODO: empty FPS buffer and bool flag that is to be passed into next queue
 	}
 }
 
 void VideoManager::writeOutLoop() {
 	VideoSegment* current_segment = nullptr;
 	std::queue<VideoSegment*> outputBuffer;
-	bool create_new_queue = true;		//TODO: May not need this.
-	bool volume_detected = false;
 	bool write_to_outputBuffer = false;
+	double i = 0;
+	double running_db_total = 0;
 
 	//Loop through the whole input file
 	while ((this->reached_end = av_read_frame(this->input_ctx, this->packet)) >= 0) {
@@ -391,37 +391,33 @@ void VideoManager::writeOutLoop() {
 
 		// If packet is video
 		if (this->packet->stream_index == this->video_stream_idx) {
-			if (create_new_queue) {
-				create_new_queue = false;
-				if (current_segment != nullptr) {
-					writeOutputBuffer(&outputBuffer, current_segment);
+			if (current_segment != nullptr) {
+				// Check audio profile of buffer
+				if ((running_db_total / i) > this->volume_threshold_db) {
+					if (current_segment != nullptr) {
+						current_segment->keep = true;
+					}
 				}
-				//Start new VideoSegment and set PTS
-				current_segment = new VideoSegment();
-				current_segment->start_pts = this->packet->pts;
-				current_segment->queue.push(this->packet);
-
+				i = 0;
+				running_db_total = 0;
+				writeOutputBuffer(&outputBuffer, current_segment);
 			}
+			//Start new VideoSegment and set PTS
+			current_segment = new VideoSegment();
+			current_segment->start_pts = this->packet->pts;
+			current_segment->queue.push(this->packet);
 		}
 
 		// if packet is audio
 		else if (this->packet->stream_index == this->audio_stream_idx) {
-			create_new_queue = true;
 			if (current_segment != nullptr) {
 				current_segment->queue.push(this->packet);
 			}
 
-			if (!volume_detected) {
-				// Read in audio frames until db threshold is met
-				while (avcodec_receive_frame(this->audio_ctx, this->frame)) {
-					if (this->volume_threshold_db < this->calculateRMS(frame, this->audio_ctx)) {
-						volume_detected = true;
-						if (current_segment != nullptr) {
-							current_segment->keep = true;
-						}
-						break;
-					}
-				}
+			// Read in audio frames and profile db average of the packet
+			while (avcodec_receive_frame(this->audio_ctx, this->frame)) {
+				i++;
+				running_db_total += this->calculateRMS(frame, this->audio_ctx);
 			}
 		}
 

@@ -54,7 +54,7 @@ private:
     float volume_threshold_db;
     int64_t dead_space_buffer;
     int64_t previous_end_pts;
-    int64_t packet_pts_variance;
+    int64_t PTS_offset;
     bool is_audible;
     
 
