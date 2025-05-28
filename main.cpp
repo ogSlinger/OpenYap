@@ -10,6 +10,6 @@ extern "C" {  // Use C linkage for FFmpeg libraries since they're written in C
 
 int main(int argc, char* argv[]) {
     VideoManager vm("input.mp4", "output.mp4");
-
+    vm.buildVideo();
     return 0;  // Return success code
 }

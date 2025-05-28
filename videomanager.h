@@ -25,16 +25,12 @@ private:
     AVCodecContext* audio_ctx;
     int audio_stream_idx;
     int video_stream_idx;
-
-    float rms_volume;
-    int rms_nb_samples;
-    int rms_channels;
+    float linear_volume_threshold;
 
     AVPacket* packet;
     AVPacket* out_pkt_ptr;
     AVFrame* frame;
     double packets_per_sec;
-    int64_t output_buffer_capacity;
     unsigned char writeOutBufferState;
     int reached_end;
     
@@ -75,15 +71,12 @@ public:
     void createOutputStreams();
     void openOutputFile();
     void writeFileHeader();
+    void writeFileTrailer();
     void setVideoContext();
     void setAudiocontext();
-    void setPacketsPerSec();
-    double getPacketsPerSecond();
     void buildVideo();
-    bool profilePacketAudio(const AVPacket* original_packet);
-    float calculateRMS(AVFrame* frame, AVCodecContext* audio_codec_ctx);
-    void writeHalfQueue(std::queue<VideoSegment*>* outputBuffer);
-    void writeEntireQueue(std::queue<VideoSegment*>* outputBuffer);
+    float calculateLinearScaleThreshold();
+    void calculateFrameAudio(VideoSegment* current_segment, AVPacket* packet, int bytes_per_sample);
     void writeFullQueue();
     void writeHalfQueue();
     void popHalfQueue(std::queue<VideoSegment*>* outputBuffer);
