@@ -12,6 +12,7 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 	this->output_ctx = nullptr;
 	this->video_codec_ctx = nullptr;
 	this->audio_ctx = nullptr;
+	this->out_pkt_ptr = nullptr;
 
 	this->packets_per_sec = -1;
 	this->output_buffer_capacity = -1;
@@ -28,7 +29,7 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 	this->rms_nb_samples = 0;
 	this->rms_channels = 0;
 
-	this->previous_end_pts = 0;
+	this->previous_next_pts = 0;
 	this->PTS_offset = 0;
 	this->is_audible = false;
 
@@ -312,15 +313,40 @@ float VideoManager::calculateRMS(AVFrame* frame, AVCodecContext* audio_codec_ctx
 	return (rms > 0.0) ? 20.0f * log10(rms) : -100.0f;
 }
 
-void VideoManager::writeHalfQueue(std::queue<VideoSegment*>* outputBuffer) {
-	// Be sure to call free on packets and delete on videosegments!
+void VideoManager::emptyOutfileBuffer(std::queue<VideoSegment*>* outputBuffer) {
+	while (!outputBuffer->empty()) {
+		while (!outputBuffer->front()->queue.empty()) {
+			this->out_pkt_ptr = outputBuffer->front()->queue.front();
+			this->out_pkt_ptr->pts -= this->PTS_offset;
+			av_interleaved_write_frame(output_ctx, this->out_pkt_ptr);
+			av_packet_free(&outputBuffer->front()->queue.front());
+			outputBuffer->front()->queue.pop();
+		}
+		this->out_pkt_ptr = NULL;
+		delete outputBuffer->front();
+		outputBuffer->pop();
+
+		if (outputBuffer->size() == 1) {
+			this->previous_next_pts = outputBuffer->front()->next_pts;
+		}
+	}
 }
 
-void VideoManager::writeEntireQueue(std::queue<VideoSegment*>* outputBuffer) {
-	// Be sure to call free on packets and delete on videosegments!
+void VideoManager::writeFullQueue() {
+	this->writeHalfQueue();
+	this->writeHalfQueue();
 }
 
-void VideoManager::emptyOutputBuffer(std::queue<VideoSegment*>* outputBuffer) {
+void VideoManager::writeHalfQueue() {
+	if (!this->outputQueue.empty()) {
+		this->emptyOutfileBuffer(this->outputQueue.front());
+		delete this->outputQueue.front();
+		this->outputQueue.pop();
+	}
+}
+
+void VideoManager::popHalfQueue(std::queue<VideoSegment*>* outputBuffer) {
+	int64_t start_pts = outputBuffer->front()->start_pts;
 	while (!outputBuffer->empty()) {
 		while (!outputBuffer->front()->queue.empty()) {
 			av_packet_free(&outputBuffer->front()->queue.front());
@@ -328,50 +354,74 @@ void VideoManager::emptyOutputBuffer(std::queue<VideoSegment*>* outputBuffer) {
 		}
 		delete outputBuffer->front();
 		outputBuffer->pop();
-	}
-}
 
-void VideoManager::emptyOutputQueue() {
-	while (!this->outputQueue.empty()) {
-		this->emptyOutputBuffer(&this->outputQueue.front());
-		this->outputQueue.pop();
+		if (outputBuffer->size() == 1) {
+			this->PTS_offset += (outputBuffer->front()->next_pts - start_pts);
+		}
 	}
+	
 }
 
 void VideoManager::invokeQueueSM() {
 	//State Machine Writing Output
-	if (this->outputQueue.size() == output_buffer_capacity * 2) {
-		switch (writeOutBufferState & 0b00000011) {
-		case 0b00:
-			break;
-		case 0b01:
-		case 0b10:
-			break;
-		case 0b11:
-			break;
-		}
+	switch (this->writeOutBufferState & 0b00000011) {
+	case 0b00:
+		// Pop one
+		this->popHalfQueue(this->outputQueue.front());
+		delete this->outputQueue.front();
+		this->outputQueue.pop();
+		this->writeOutBufferState <<= 1;
+		this->writeOutBufferState &= 0b011;
+		break;
+	case 0b01:
+	case 0b10:
+		// Write Both
+		this->writeFullQueue();
+		this->writeOutBufferState = 0;
+		break;
+	case 0b11:
+		//Write 1
+		this->writeHalfQueue();
+		this->writeOutBufferState <<= 1;
+		this->writeOutBufferState &= 0b011;
+		break;
 	}
 }
 
-void VideoManager::writeToOutputQueue(std::queue<VideoSegment*> outputBuffer) {
-	if (this->outputQueue.empty()) {
+void VideoManager::writeToOutputQueue(std::queue<VideoSegment*>* outputBuffer) {
+	if (this->outputQueue.empty() && !this->reached_end) {
+		this->writeOutBufferState = (outputBuffer->front()->keep) ? 0b10 : 0b00;
 		this->outputQueue.push(outputBuffer);
+		return;
 	}
-	else if (this->outputQueue.size() == 1) {
-		this->outputQueue.push(outputBuffer);
-	}
-	else {
+	this->writeOutBufferState = (outputBuffer->front()->keep) ? (this->writeOutBufferState | 0b1) : (this->writeOutBufferState | 0b0);
+	this->outputQueue.push(outputBuffer);
+	this->invokeQueueSM();
+}
 
+void VideoManager::emptyFPSBuffer(std::queue<VideoSegment*>* outputBuffer) {
+	while (!outputBuffer->empty()) {
+		outputBuffer->pop();
 	}
 }
 
 void VideoManager::writeOutputBuffer(std::queue<VideoSegment*>* outputBuffer, VideoSegment* current_segment) {
-	if (outputBuffer->size() < this->output_buffer_capacity) {
-		outputBuffer->push(current_segment);
+	if (!this->reached_end) {
+		if (outputBuffer->size() < this->output_buffer_capacity) {
+			outputBuffer->push(current_segment);
+			outputBuffer->front()->keep = outputBuffer->front()->keep || current_segment->keep;
+		}
+		else {
+			std::queue<VideoSegment*>* outputBuffer_ptr = new std::queue<VideoSegment*>(*outputBuffer);
+			this->writeToOutputQueue(outputBuffer_ptr);
+			this->emptyFPSBuffer(outputBuffer);
+		}
 	}
 	else {
-		this->writeToOutputQueue(*outputBuffer);
-		//TODO: empty FPS buffer and bool flag that is to be passed into next queue
+		outputBuffer->push(current_segment);
+		outputBuffer->front()->keep = outputBuffer->front()->keep || current_segment->keep;
+		std::queue<VideoSegment*>* outputBuffer_ptr = new std::queue<VideoSegment*>(*outputBuffer);
+		this->writeToOutputQueue(outputBuffer_ptr);
 	}
 }
 
@@ -379,7 +429,7 @@ void VideoManager::writeOutLoop() {
 	VideoSegment* current_segment = nullptr;
 	std::queue<VideoSegment*> outputBuffer;
 	bool write_to_outputBuffer = false;
-	double i = 0;
+	double num_audio_packets = 0;
 	double running_db_total = 0;
 
 	//Loop through the whole input file
@@ -393,13 +443,14 @@ void VideoManager::writeOutLoop() {
 		if (this->packet->stream_index == this->video_stream_idx) {
 			if (current_segment != nullptr) {
 				// Check audio profile of buffer
-				if ((running_db_total / i) > this->volume_threshold_db) {
+				if ((running_db_total / num_audio_packets) > this->volume_threshold_db) {
 					if (current_segment != nullptr) {
 						current_segment->keep = true;
 					}
 				}
-				i = 0;
+				num_audio_packets = 0;
 				running_db_total = 0;
+				current_segment->next_pts = this->packet->pts;
 				writeOutputBuffer(&outputBuffer, current_segment);
 			}
 			//Start new VideoSegment and set PTS
@@ -416,7 +467,7 @@ void VideoManager::writeOutLoop() {
 
 			// Read in audio frames and profile db average of the packet
 			while (avcodec_receive_frame(this->audio_ctx, this->frame)) {
-				i++;
+				num_audio_packets++;
 				running_db_total += this->calculateRMS(frame, this->audio_ctx);
 			}
 		}
@@ -424,6 +475,11 @@ void VideoManager::writeOutLoop() {
 		else {
 			// Unknown packet
 		}
+	}
+
+	if ((!outputBuffer.empty()) && (current_segment != nullptr)) {
+		this->reached_end = true;
+		writeOutputBuffer(&outputBuffer, current_segment);
 	}
 }
 
@@ -444,24 +500,6 @@ void VideoManager::buildVideo() {
 		return;
 	}
 
-	//Generate output buffer
+	this->writeOutLoop();
 
 }
-
-
-/*
-
-Flags needed:
-WRITE_OUT_PRELUDE
-WRITE_OUT_DURATION
-WRITE_OUT_POSTLUDE
-keep -> fps_queue
-
-
-Fill write_out_queue
-av_read_frame -> Read in 1 fps_queue -> set keep flag
-Append write_out_queue
-write
-
-
-*/
