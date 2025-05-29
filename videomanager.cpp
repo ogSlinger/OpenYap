@@ -16,17 +16,17 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 
 	this->packets_per_sec = -1;
 	this->dead_space_buffer = 5;
-	this->volume = 0;
 	this->volume_threshold_db = -20.0f;
 
 	this->current_segment.start_pts = AV_NOPTS_VALUE;
+	this->current_segment.start_dts = AV_NOPTS_VALUE;
 	this->current_segment.keep = false;
 	this->writeOutBufferState = 0;
 	this->reached_end = 0;
 	this->linear_volume_threshold = 0.0f;
 
-	this->previous_next_pts = 0;
 	this->PTS_offset = 0;
+	this->DTS_offset = 0;
 	this->is_audible = false;
 
 	this->packet = av_packet_alloc();
@@ -43,12 +43,6 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 
 VideoManager::~VideoManager() {
 	avformat_close_input(&this->input_ctx);
-	if (this->packet) {
-		av_packet_free(&this->packet);  // Frees both the packet and its contents
-	}
-	if (this->frame) {
-		av_frame_free(&this->frame);  // Frees both the frame structure and its contents
-	}
 }
 
 
@@ -209,7 +203,7 @@ void VideoManager::setAudiocontext() {
 	}
 }
 
-float VideoManager::calculateLinearScaleThreshold() {
+void VideoManager::calculateLinearScaleThreshold() {
 	switch (this->audio_ctx->sample_fmt) {
 	case AV_SAMPLE_FMT_S16:
 	case AV_SAMPLE_FMT_S16P:
@@ -339,17 +333,20 @@ void VideoManager::emptyOutfileBuffer(std::queue<VideoSegment*>* outputBuffer) {
 		while (!outputBuffer->front()->queue.empty()) {
 			this->out_pkt_ptr = outputBuffer->front()->queue.front();
 			this->out_pkt_ptr->pts -= this->PTS_offset;
-			av_interleaved_write_frame(output_ctx, this->out_pkt_ptr);
-			av_packet_free(&outputBuffer->front()->queue.front());
+			this->out_pkt_ptr->dts -= this->DTS_offset;
+			std::cout << "=======WRITING OUT Packet======= " << std::endl;
+			std::cout << "PTS: " << outputBuffer->front()->queue.front()->pts << std::endl;
+			std::cout << "DTS: " << outputBuffer->front()->queue.front()->dts << std::endl;
+			std::cout << "PTS OFFSET: " << this->PTS_offset << std::endl;
+			std::cout << "DTS OFFSET: " << this->DTS_offset << std::endl;
+			std::cout << "Queue Size: " << outputBuffer->front()->queue.size() << std::endl;
+			av_interleaved_write_frame(this->output_ctx, outputBuffer->front()->queue.front());
+			av_packet_unref(outputBuffer->front()->queue.front());
 			outputBuffer->front()->queue.pop();
 		}
 		this->out_pkt_ptr = NULL;
 		delete outputBuffer->front();
 		outputBuffer->pop();
-
-		if (outputBuffer->size() == 1) {
-			this->previous_next_pts = outputBuffer->front()->next_pts;
-		}
 	}
 }
 
@@ -368,6 +365,7 @@ void VideoManager::writeHalfQueue() {
 
 void VideoManager::popHalfQueue(std::queue<VideoSegment*>* outputBuffer) {
 	int64_t start_pts = outputBuffer->front()->start_pts;
+	int64_t start_dts = outputBuffer->front()->start_dts;
 	while (!outputBuffer->empty()) {
 		while (!outputBuffer->front()->queue.empty()) {
 			av_packet_free(&outputBuffer->front()->queue.front());
@@ -377,10 +375,12 @@ void VideoManager::popHalfQueue(std::queue<VideoSegment*>* outputBuffer) {
 		outputBuffer->pop();
 
 		if (outputBuffer->size() == 1) {
+			std::cout << "AMBATU OFFSET: " << this->PTS_offset << " " << outputBuffer->front()->next_pts - start_pts << std::endl;
 			this->PTS_offset += (outputBuffer->front()->next_pts - start_pts);
+			this->DTS_offset += (outputBuffer->front()->next_dts - start_dts);
 		}
 	}
-	
+
 }
 
 void VideoManager::invokeQueueSM() {
@@ -388,11 +388,13 @@ void VideoManager::invokeQueueSM() {
 	switch (this->writeOutBufferState & 0b00000011) {
 	case 0b00:
 		// Pop one
-		this->popHalfQueue(this->outputQueue.front());
-		delete this->outputQueue.front();
-		this->outputQueue.pop();
-		this->writeOutBufferState <<= 1;
-		this->writeOutBufferState &= 0b011;
+		if (!outputQueue.empty()) {
+			this->popHalfQueue(this->outputQueue.front());
+			delete this->outputQueue.front();
+			this->outputQueue.pop();
+			this->writeOutBufferState <<= 1;
+			this->writeOutBufferState &= 0b011;
+		}
 		break;
 	case 0b01:
 	case 0b10:
@@ -410,48 +412,55 @@ void VideoManager::invokeQueueSM() {
 }
 
 void VideoManager::writeToOutputQueue(std::queue<VideoSegment*>* outputBuffer) {
-	if (this->outputQueue.empty() && (this->reached_end != AVERROR_EOF)) {
-		this->writeOutBufferState = (outputBuffer->front()->keep) ? 0b10 : 0b00;
+	if (!outputBuffer->empty()) {
+		this->writeOutBufferState <<= 1;
+		this->writeOutBufferState &= 0b011;
+		this->writeOutBufferState = (outputBuffer->front()->keep) ? (this->writeOutBufferState | 0b1) : (this->writeOutBufferState | 0b0);
 		this->outputQueue.push(outputBuffer);
-		return;
+		if (outputQueue.size() == 1) {
+			this->writeOutBufferState <<= 1;
+			this->writeOutBufferState &= 0b011;
+		}
+		else {
+			this->invokeQueueSM();
+		}
 	}
-	this->writeOutBufferState = (outputBuffer->front()->keep) ? (this->writeOutBufferState | 0b1) : (this->writeOutBufferState | 0b0);
-	this->outputQueue.push(outputBuffer);
-	this->invokeQueueSM();
 }
 
-void VideoManager::emptyFPSBuffer(std::queue<VideoSegment*>* outputBuffer) {
-	while (!outputBuffer->empty()) {
-		outputBuffer->pop();
+std::queue<VideoManager::VideoSegment*>* VideoManager::copyOutputBuffer(std::queue<VideoSegment*>* old_outputBuffer) {
+	std::queue<VideoSegment*>* new_outputBuffer = new std::queue<VideoSegment*>();
+	while (!old_outputBuffer->empty()) {
+		new_outputBuffer->push(old_outputBuffer->front());
+		old_outputBuffer->pop();
 	}
+	return new_outputBuffer;
 }
 
 void VideoManager::writeOutputBuffer(std::queue<VideoSegment*>* outputBuffer, VideoSegment* current_segment) {
 	if (this->reached_end != AVERROR_EOF) {
-		if (outputBuffer->size() < this->dead_space_buffer) {
-			outputBuffer->push(current_segment);
-			outputBuffer->front()->keep = outputBuffer->front()->keep || current_segment->keep;
-		}
-		else {
-			std::queue<VideoSegment*>* outputBuffer_ptr = new std::queue<VideoSegment*>(*outputBuffer);
-			this->writeToOutputQueue(outputBuffer_ptr);
-			this->emptyFPSBuffer(outputBuffer);
-		}
+		outputBuffer->push(current_segment);
+		outputBuffer->front()->keep = outputBuffer->front()->keep || current_segment->keep;
 	}
 	else {
 		outputBuffer->push(current_segment);
 		outputBuffer->front()->keep = outputBuffer->front()->keep || current_segment->keep;
-		std::queue<VideoSegment*>* outputBuffer_ptr = new std::queue<VideoSegment*>(*outputBuffer);
-		this->writeToOutputQueue(outputBuffer_ptr);
-		this->invokeQueueSM();
-		this->invokeQueueSM();
+		std::queue<VideoManager::VideoSegment*>* newBuffer = this->copyOutputBuffer(outputBuffer);
+		this->writeToOutputQueue(newBuffer);
+		return;
+	}
+
+	outputBuffer->front()->ready_to_push = (outputBuffer->size() >= this->dead_space_buffer) ? true : false;
+	if (!outputBuffer->empty() && outputBuffer->front()->ready_to_push) {
+		std::queue<VideoManager::VideoSegment*>* newBuffer = this->copyOutputBuffer(outputBuffer);
+		this->writeToOutputQueue(newBuffer);
+		return;
 	}
 }
 
 void VideoManager::writeOutLoop() {
 	VideoSegment* current_segment = nullptr;
 	std::queue<VideoSegment*> outputBuffer;
-	bool write_to_outputBuffer = false;
+	bool push_clear_buffer = false;
 	int audio_frame_index = 0;
 	int bytes_per_sample = av_get_bytes_per_sample(this->audio_ctx->sample_fmt);
 	double packet_duration = 0.0f;
@@ -462,13 +471,26 @@ void VideoManager::writeOutLoop() {
 	this->calculateLinearScaleThreshold();
 
 	//Loop through the whole input file
-	while ((this->reached_end = av_read_frame(this->input_ctx, this->packet)) >= 0) 
+	while ((this->reached_end = av_read_frame(this->input_ctx, this->packet)) >= 0) {
+
+		//		DEBUG
+		/*std::cout << "=== READING IN PACKET INFO ===" << std::endl;
+		std::cout << "Stream Index: " << this->packet->stream_index << std::endl;
+		std::cout << "PTS: " << this->packet->pts << std::endl;
+		std::cout << "DTS: " << this->packet->dts << std::endl;
+		std::cout << "Duration: " << this->packet->duration << std::endl;
+		std::cout << "Size: " << this->packet->size << " bytes" << std::endl;
+		std::cout << "Flags: " << (this->packet->flags & AV_PKT_FLAG_KEY ? "KEY " : "") <<
+			(this->packet->flags & AV_PKT_FLAG_CORRUPT ? "CORRUPT " : "") << std::endl;
+		std::cout << "-------------------" << std::endl;*/
+
+		push_clear_buffer = (this->packet->flags & AV_PKT_FLAG_KEY);
+
 		// If EOF is reached, finish the output
 		if (this->reached_end == AVERROR_EOF) {
 			if (current_segment != nullptr) {
 				writeOutputBuffer(&outputBuffer, current_segment);
 			}
-			
 		}
 
 		// Create new segment if none exists
@@ -476,42 +498,35 @@ void VideoManager::writeOutLoop() {
 			//Start new VideoSegment and set PTS
 			current_segment = new VideoSegment();
 			current_segment->start_pts = this->packet->pts;
+			current_segment->start_dts = this->packet->dts;
 			current_segment->queue.push(this->packet);
-		}
-
-		// If packet is video
-		if (this->packet->stream_index == this->video_stream_idx) {
-			if (current_segment != nullptr) {
-				// Check audio profile of buffer
-				if ((running_db_total / num_audio_packets) > this->volume_threshold_db) {
-					if (current_segment != nullptr) {
-						current_segment->keep = true;
-					}
-				}
-			}
 		}
 
 		// if packet is audio
-		else if (this->packet->stream_index == this->audio_stream_idx) {
+		if (this->packet->stream_index == this->audio_stream_idx) {
 			this->calculateFrameAudio(current_segment, packet, bytes_per_sample);
-			current_segment->queue.push(this->packet);
-			
 		}
 
 		// If PTS exceeds, push and reset
 		packet_duration = packet->duration * av_q2d(input_ctx->streams[packet->stream_index]->time_base);
-		if (running_duration + packet_duration > 1.0f) {
+		if (running_duration + packet_duration > 1.0f && push_clear_buffer) {
+			std::cout << "=========STARTING NEW VIDEOSEGMENT==============" << std::endl;
 			current_segment->next_pts = this->packet->pts;
-			writeOutputBuffer(&outputBuffer, current_segment);
+			current_segment->next_dts = this->packet->dts;
+			this->writeOutputBuffer(&outputBuffer, current_segment);
+
+			// Reset and push recent packet
 			running_duration = 0.0f;
 			current_segment = new VideoSegment();
 			current_segment->start_pts = this->packet->pts;
+			current_segment->start_dts = this->packet->dts;
 			current_segment->queue.push(this->packet);
 		}
 		else {
 			running_duration += packet_duration;
-			writeOutputBuffer(&outputBuffer, current_segment);
+			current_segment->queue.push(this->packet);
 		}
+	}
 }
 
 void VideoManager::buildVideo() {
@@ -539,6 +554,7 @@ void VideoManager::buildVideo() {
 	try {
 		this->writeOutLoop();
 		this->writeFileTrailer();
+		std::cout << "Reached End";
 	}
 	catch (const std::exception& e) {
 		std::cerr << "Parse error: " << e.what() << std::endl;

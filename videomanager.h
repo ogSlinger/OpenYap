@@ -36,23 +36,25 @@ private:
     
     struct VideoSegment {
         int64_t start_pts;  
+        int64_t start_dts;  
         int64_t next_pts;
-        bool keep;             // Flag to indicate if segment should be kept
+        int64_t next_dts;
+        bool keep;
+        bool ready_to_push;
         std::queue<AVPacket*> queue;
 
         VideoSegment()
-            : start_pts(-1), next_pts(-1), queue(), keep(false) {}
-        VideoSegment(int64_t start, int64_t end, std::queue<AVPacket*>* queue_ptr, bool keep_flag) 
-            : start_pts(start), next_pts(end), queue(), keep(keep_flag){}
+            : start_pts(-1), start_dts(-1), next_pts(-1), next_dts(-1), queue(), keep(false), ready_to_push(false) {}
+        VideoSegment(int64_t start_pts, int64_t start_dts, int64_t next_pts, int64_t next_dts, std::queue<AVPacket*>* queue_ptr, bool keep_flag, bool push_flag)
+            : start_pts(start_pts), start_dts(start_dts), next_pts(next_pts), next_dts(next_dts), queue(), keep(keep_flag), ready_to_push(push_flag) {}
     };
     VideoSegment current_segment;
     std::queue<std::queue<VideoSegment*>*> outputQueue;
 
-    float volume;
     float volume_threshold_db;
     int64_t dead_space_buffer;
-    int64_t previous_next_pts;
     int64_t PTS_offset;
+    int64_t DTS_offset;
     bool is_audible;
     
 
@@ -75,14 +77,14 @@ public:
     void setVideoContext();
     void setAudiocontext();
     void buildVideo();
-    float calculateLinearScaleThreshold();
+    void calculateLinearScaleThreshold();
     void calculateFrameAudio(VideoSegment* current_segment, AVPacket* packet, int bytes_per_sample);
     void writeFullQueue();
     void writeHalfQueue();
     void popHalfQueue(std::queue<VideoSegment*>* outputBuffer);
     void invokeQueueSM();
     void writeToOutputQueue(std::queue<VideoSegment*>* outputBuffer);
-    void emptyFPSBuffer(std::queue<VideoSegment*>* outputBuffer);
+    std::queue<VideoSegment*>* copyOutputBuffer(std::queue<VideoSegment*>* old_outputBuffer);
     void emptyOutfileBuffer(std::queue<VideoSegment*>* outputBuffer);
     void writeOutputBuffer(std::queue<VideoSegment*>* outputBuffer, VideoSegment* current_segment);
     void writeOutLoop();
