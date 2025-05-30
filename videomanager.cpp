@@ -16,7 +16,7 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 
 	this->packets_per_sec = -1;
 	this->dead_space_buffer = 5;
-	this->volume_threshold_db = -20.0f;
+	this->volume_threshold_db = -10.0f;
 
 	this->current_segment.start_pts = AV_NOPTS_VALUE;
 	this->current_segment.start_dts = AV_NOPTS_VALUE;
@@ -203,71 +203,129 @@ void VideoManager::setAudiocontext() {
 	}
 }
 
-void VideoManager::calculateLinearScaleThreshold() {
+void VideoManager::calculateLinearScaleThreshold(int& bytes_per_sample) {
+	switch (this->audio_ctx->sample_fmt) {
+	case AV_SAMPLE_FMT_U8:
+	case AV_SAMPLE_FMT_U8P:
+		bytes_per_sample = 1;
+		break;
+	case AV_SAMPLE_FMT_S16:
+	case AV_SAMPLE_FMT_S16P:
+		bytes_per_sample = 2;
+		break;
+	case AV_SAMPLE_FMT_S32:
+	case AV_SAMPLE_FMT_S32P:
+	case AV_SAMPLE_FMT_FLT:
+	case AV_SAMPLE_FMT_FLTP:
+		bytes_per_sample = 4;
+		break;
+	case AV_SAMPLE_FMT_DBL:
+	case AV_SAMPLE_FMT_DBLP:
+		bytes_per_sample = 8;
+		break;
+	}
+
 	switch (this->audio_ctx->sample_fmt) {
 	case AV_SAMPLE_FMT_S16:
+		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f) * 32767.0f;
+		bytes_per_sample *= this->audio_ctx->ch_layout.nb_channels;
+		break;
 	case AV_SAMPLE_FMT_S16P:
 		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f) * 32767.0f;
 		break;
-
 	case AV_SAMPLE_FMT_FLT:
+		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f);
+		bytes_per_sample *= this->audio_ctx->ch_layout.nb_channels;
+		break;
 	case AV_SAMPLE_FMT_FLTP:
 		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f);
 		break;
-
 	case AV_SAMPLE_FMT_S32:
+		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f) * 2147483647.0f;
+		bytes_per_sample *= this->audio_ctx->ch_layout.nb_channels;
+		break;
 	case AV_SAMPLE_FMT_S32P:
 		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f) * 2147483647.0f;
 		break;
-
 	case AV_SAMPLE_FMT_U8:
-	case AV_SAMPLE_FMT_U8P:
-		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f) * 127.0f + 128.0f;
+		// U8 is unsigned: 0-255, with 128 as zero point
+		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f) * 128.0f;
+		bytes_per_sample *= this->audio_ctx->ch_layout.nb_channels;
 		break;
-
+	case AV_SAMPLE_FMT_U8P:
+		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f) * 128.0f;
+		break;
 	case AV_SAMPLE_FMT_DBL:
+		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f);
+		bytes_per_sample *= this->audio_ctx->ch_layout.nb_channels;
+		break;
 	case AV_SAMPLE_FMT_DBLP:
 		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f);
 		break;
-
 	default:
+		this->linear_volume_threshold = 0.0f;
 		break;
 	}
 }
 
 void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* packet, int bytes_per_sample) {
 	int peak_threshold_count = 0;
+	int channels = 0;
+	int sample_count = 0;
+	avcodec_send_packet(this->audio_ctx, packet);
+	AVFrame* frame = av_frame_alloc();
+
 	switch (this->audio_ctx->sample_fmt) {
 	case AV_SAMPLE_FMT_S16:
 	case AV_SAMPLE_FMT_S16P:
 	{
-		int sample_count = packet->size / bytes_per_sample;
-		int16_t* samples = (int16_t*)packet->data;
-		for (int audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += 8) {
-			if (abs(samples[audio_frame_index]) > this->linear_volume_threshold) {
-				peak_threshold_count++;
-				if (peak_threshold_count == 5) {
-					current_segment->keep = true;
-					break;
+		int16_t* samples = 0;
+		int num_increment = 0;
+		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
+			channels = frame->ch_layout.nb_channels;
+			sample_count = frame->nb_samples * channels;
+			samples = (int16_t*)frame->data;
+			num_increment = 8 * channels;
+
+			for (int audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
+				if (abs(samples[audio_frame_index]) > this->linear_volume_threshold) {
+					peak_threshold_count++;
+					if (peak_threshold_count == 5) {
+						current_segment->keep = true;
+						break;
+					}
 				}
 			}
+			av_frame_unref(frame);
+			if (current_segment->keep == true) { break; }
 		}
 	}
 	break;
-
+	
 	case AV_SAMPLE_FMT_FLT:
 	case AV_SAMPLE_FMT_FLTP:
 	{
-		int sample_count = packet->size / bytes_per_sample;
-		float* samples = (float*)packet->data;
-		for (int audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += 8) {
-			if (fabs(samples[audio_frame_index]) > this->linear_volume_threshold) {
-				peak_threshold_count++;
-				if (peak_threshold_count == 5) {
-					current_segment->keep = true;
-					break;
+		float* samples = 0;
+		int num_increment = 0;
+		std::cout << ">>>>>New Audio Packet Read<<<<<" << std::endl;
+		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
+			channels = frame->ch_layout.nb_channels;
+			sample_count = frame->nb_samples * channels;
+			samples = (float*)frame->data[0];
+			num_increment = 8 * channels;
+			std::cout << ":::::New Audio Frame Read:::::" << std::endl;
+			for (int audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
+				std::cout << "Audio Sample Data: " << fabs(samples[audio_frame_index]) << " || Volume Threshold: " << this->linear_volume_threshold << std::endl;
+				if (fabs(samples[audio_frame_index]) > this->linear_volume_threshold) {
+					peak_threshold_count++;
+					if (peak_threshold_count == 5) {
+						current_segment->keep = true;
+						break;
+					}
 				}
 			}
+			av_frame_unref(frame);
+			if (current_segment->keep == true) { break; }
 		}
 	}
 	break;
@@ -275,16 +333,25 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 	case AV_SAMPLE_FMT_S32:
 	case AV_SAMPLE_FMT_S32P:
 	{
-		int sample_count = packet->size / bytes_per_sample;
-		int32_t* samples = (int32_t*)packet->data;
-		for (int audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += 8) {
-			if (abs(samples[audio_frame_index]) > this->linear_volume_threshold) {
-				peak_threshold_count++;
-				if (peak_threshold_count == 5) {
-					current_segment->keep = true;
-					break;
+		int32_t* samples = 0;
+		int num_increment = 0;
+		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
+			channels = frame->ch_layout.nb_channels;
+			sample_count = frame->nb_samples * channels;
+			samples = (int32_t*)frame->data;
+			num_increment = 8 * channels;
+
+			for (int audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
+				if (abs(samples[audio_frame_index]) > this->linear_volume_threshold) {
+					peak_threshold_count++;
+					if (peak_threshold_count == 5) {
+						current_segment->keep = true;
+						break;
+					}
 				}
 			}
+			av_frame_unref(frame);
+			if (current_segment->keep == true) { break; }
 		}
 	}
 	break;
@@ -292,16 +359,25 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 	case AV_SAMPLE_FMT_U8:
 	case AV_SAMPLE_FMT_U8P:
 	{
-		int sample_count = packet->size / bytes_per_sample;
-		uint8_t* samples = (uint8_t*)packet->data;
-		for (int audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += 8) {
-			if (abs(samples[audio_frame_index] - 128) > this->linear_volume_threshold) {
-				peak_threshold_count++;
-				if (peak_threshold_count == 5) {
-					current_segment->keep = true;
-					break;
+		uint8_t* samples = 0;
+		int num_increment = 0;
+		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
+			channels = frame->ch_layout.nb_channels;
+			sample_count = frame->nb_samples * channels;
+			samples = (uint8_t*)frame->data;
+			num_increment = 8 * channels;
+
+			for (int audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
+				if (abs(samples[audio_frame_index] - 128) > this->linear_volume_threshold) {
+					peak_threshold_count++;
+					if (peak_threshold_count == 5) {
+						current_segment->keep = true;
+						break;
+					}
 				}
 			}
+			av_frame_unref(frame);
+			if (current_segment->keep == true) { break; }
 		}
 	}
 	break;
@@ -309,16 +385,25 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 	case AV_SAMPLE_FMT_DBL:
 	case AV_SAMPLE_FMT_DBLP:
 	{
-		int sample_count = packet->size / bytes_per_sample;
-		double* samples = (double*)packet->data;
-		for (int audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += 8) {
-			if (fabs(samples[audio_frame_index]) > this->linear_volume_threshold) {
-				peak_threshold_count++;
-				if (peak_threshold_count == 5) {
-					current_segment->keep = true;
-					break;
+		double* samples = 0;
+		int num_increment = 0;
+		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
+			channels = frame->ch_layout.nb_channels;
+			sample_count = frame->nb_samples * channels;
+			samples = (double*)frame->data;
+			num_increment = 8 * channels;
+
+			for (int audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
+				if (fabs(samples[audio_frame_index]) > this->linear_volume_threshold) {
+					peak_threshold_count++;
+					if (peak_threshold_count == 5) {
+						current_segment->keep = true;
+						break;
+					}
 				}
 			}
+			av_frame_unref(frame);
+			if (current_segment->keep == true) { break; }
 		}
 	}
 	break;
@@ -326,6 +411,7 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 	default:
 		break;
 	}
+	av_frame_free(&frame);
 }
 
 void VideoManager::emptyOutfileBuffer(std::queue<VideoSegment*>* outputBuffer) {
@@ -334,12 +420,12 @@ void VideoManager::emptyOutfileBuffer(std::queue<VideoSegment*>* outputBuffer) {
 			this->out_pkt_ptr = outputBuffer->front()->queue.front();
 			this->out_pkt_ptr->pts -= this->PTS_offset;
 			this->out_pkt_ptr->dts -= this->DTS_offset;
-			std::cout << "=======WRITING OUT Packet======= " << std::endl;
+			/*std::cout << "=======WRITING OUT Packet======= " << std::endl;
 			std::cout << "PTS: " << outputBuffer->front()->queue.front()->pts << std::endl;
 			std::cout << "DTS: " << outputBuffer->front()->queue.front()->dts << std::endl;
 			std::cout << "PTS OFFSET: " << this->PTS_offset << std::endl;
 			std::cout << "DTS OFFSET: " << this->DTS_offset << std::endl;
-			std::cout << "Queue Size: " << outputBuffer->front()->queue.size() << std::endl;
+			std::cout << "Queue Size: " << outputBuffer->front()->queue.size() << std::endl;*/
 			av_interleaved_write_frame(this->output_ctx, outputBuffer->front()->queue.front());
 			av_packet_unref(outputBuffer->front()->queue.front());
 			outputBuffer->front()->queue.pop();
@@ -375,7 +461,6 @@ void VideoManager::popHalfQueue(std::queue<VideoSegment*>* outputBuffer) {
 		outputBuffer->pop();
 
 		if (outputBuffer->size() == 1) {
-			std::cout << "AMBATU OFFSET: " << this->PTS_offset << " " << outputBuffer->front()->next_pts - start_pts << std::endl;
 			this->PTS_offset += (outputBuffer->front()->next_pts - start_pts);
 			this->DTS_offset += (outputBuffer->front()->next_dts - start_dts);
 		}
@@ -384,6 +469,11 @@ void VideoManager::popHalfQueue(std::queue<VideoSegment*>* outputBuffer) {
 }
 
 void VideoManager::invokeQueueSM() {
+	std::cout << "Before SM : "
+		<< ((this->writeOutBufferState & 4) ? '1' : '0')
+		<< ((this->writeOutBufferState & 2) ? '1' : '0')
+		<< ((this->writeOutBufferState & 1) ? '1' : '0')
+		<< std::endl;
 	//State Machine Writing Output
 	switch (this->writeOutBufferState & 0b00000011) {
 	case 0b00:
@@ -394,6 +484,11 @@ void VideoManager::invokeQueueSM() {
 			this->outputQueue.pop();
 			this->writeOutBufferState <<= 1;
 			this->writeOutBufferState &= 0b011;
+			std::cout << "After Shift 0b00 : "
+				<< ((this->writeOutBufferState & 4) ? '1' : '0')
+				<< ((this->writeOutBufferState & 2) ? '1' : '0')
+				<< ((this->writeOutBufferState & 1) ? '1' : '0')
+				<< std::endl;
 		}
 		break;
 	case 0b01:
@@ -401,12 +496,22 @@ void VideoManager::invokeQueueSM() {
 		// Write Both
 		this->writeFullQueue();
 		this->writeOutBufferState = 0;
+		std::cout << "After 0b01 or 0b10 Shift : "
+			<< ((this->writeOutBufferState & 4) ? '1' : '0')
+			<< ((this->writeOutBufferState & 2) ? '1' : '0')
+			<< ((this->writeOutBufferState & 1) ? '1' : '0')
+			<< std::endl;
 		break;
 	case 0b11:
 		//Write 1
 		this->writeHalfQueue();
 		this->writeOutBufferState <<= 1;
 		this->writeOutBufferState &= 0b011;
+		std::cout << "After 0b11 : "
+			<< ((this->writeOutBufferState & 4) ? '1' : '0')
+			<< ((this->writeOutBufferState & 2) ? '1' : '0')
+			<< ((this->writeOutBufferState & 1) ? '1' : '0')
+			<< std::endl;
 		break;
 	}
 }
@@ -416,9 +521,16 @@ void VideoManager::writeToOutputQueue(std::queue<VideoSegment*>* outputBuffer) {
 		this->writeOutBufferState <<= 1;
 		this->writeOutBufferState &= 0b011;
 		this->writeOutBufferState = (outputBuffer->front()->keep) ? (this->writeOutBufferState | 0b1) : (this->writeOutBufferState | 0b0);
+		std::cout << "Adjusting before sending to SM : "
+			<< ((this->writeOutBufferState & 4) ? '1' : '0')
+			<< ((this->writeOutBufferState & 2) ? '1' : '0')
+			<< ((this->writeOutBufferState & 1) ? '1' : '0')
+			<< " TRUE? " << outputBuffer->front()->keep
+			<< " PTS? " << outputBuffer->front()->start_pts
+			<< std::endl;
 		this->outputQueue.push(outputBuffer);
 		if (outputQueue.size() == 1) {
-			this->writeOutBufferState <<= 1;
+			this->writeOutBufferState <<= 0b1;
 			this->writeOutBufferState &= 0b011;
 		}
 		else {
@@ -468,7 +580,7 @@ void VideoManager::writeOutLoop() {
 	int sample_count = 0;
 	double num_audio_packets = 0;
 	double running_db_total = 0;
-	this->calculateLinearScaleThreshold();
+	this->calculateLinearScaleThreshold(bytes_per_sample);
 
 	//Loop through the whole input file
 	while ((this->reached_end = av_read_frame(this->input_ctx, this->packet)) >= 0) {

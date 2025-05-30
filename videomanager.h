@@ -77,7 +77,7 @@ public:
     void setVideoContext();
     void setAudiocontext();
     void buildVideo();
-    void calculateLinearScaleThreshold();
+    void calculateLinearScaleThreshold(int& bytes_per_sample);
     void calculateFrameAudio(VideoSegment* current_segment, AVPacket* packet, int bytes_per_sample);
     void writeFullQueue();
     void writeHalfQueue();
