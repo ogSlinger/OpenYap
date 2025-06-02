@@ -1,3 +1,4 @@
+//© 2025[Derek Spaulding].All rights reserved.
 #pragma once
 #include <string>
 #include <vector>
@@ -90,3 +91,4 @@ private:
     void writeOutputBuffer(std::queue<VideoSegment*>* outputBuffer, VideoSegment* current_segment);
     void writeOutLoop();
 };
+//© 2025[Derek Spaulding].All rights reserved.

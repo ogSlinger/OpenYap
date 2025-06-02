@@ -1,3 +1,4 @@
+//© 2025[Derek Spaulding].All rights reserved.
 #include "videomanager.h"
 
 #define MAX_STREAMS 10
@@ -224,7 +225,6 @@ void VideoManager::calculateLinearScaleThreshold() {
 		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f) * 2147483647.0f;
 		break;
 	case AV_SAMPLE_FMT_U8:
-		// U8 is unsigned: 0-255, with 128 as zero point
 		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f) * 128.0f;
 		break;
 	case AV_SAMPLE_FMT_U8P:
@@ -260,21 +260,17 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 		__fallthrough;
 	case AV_SAMPLE_FMT_S16:
 	{
-		std::cout << ">>>>>New Audio Packet Read<<<<<" << std::endl;
 		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
 			int16_t* samples = (int16_t*)frame->data[0];
 			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
-			std::cout << ":::::New Audio Frame Read:::::" << std::endl;
 			for (audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
-				std::cout << "Audio Sample Data: " << abs(samples[audio_frame_index])
-					<< " || Volume Threshold: " << this->linear_volume_threshold << std::endl;
 				peak_threshold_count += (abs(samples[audio_frame_index]) > this->linear_volume_threshold) ? 1 : -1;
 				if (peak_threshold_count == 5) {
-					current_segment->keep = true;
+					current_segment->keep |= true;
 					break;
 				}
 				else if (peak_threshold_count == -5) {
-					current_segment->keep = false;
+					current_segment->keep |= false;
 					break;
 				}
 			}
@@ -289,21 +285,21 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 		__fallthrough;
 	case AV_SAMPLE_FMT_FLT:
 	{
-		std::cout << ">>>>>New Audio Packet Read<<<<<" << std::endl;
+		//std::cout << ">>>>>New Audio Packet Read<<<<<" << std::endl;
 		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
 			float* samples = (float*)frame->data[0];
 			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
-			std::cout << ":::::New Audio Frame Read:::::" << std::endl;
+			//std::cout << ":::::New Audio Frame Read:::::" << std::endl;
 			for (audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
-				std::cout << "Audio Sample Data: " << fabs(samples[audio_frame_index])
-					<< " || Volume Threshold: " << this->linear_volume_threshold << std::endl;
+				//std::cout << "Audio Sample Data: " << fabs(samples[audio_frame_index])
+					//<< " || Volume Threshold: " << this->linear_volume_threshold << std::endl;
 				peak_threshold_count += (fabs(samples[audio_frame_index]) > this->linear_volume_threshold) ? 1 : -1;
 				if (peak_threshold_count == 5) {
-					current_segment->keep = true;
+					current_segment->keep |= true;
 					break;
 				}
 				else if (peak_threshold_count == -5) {
-					current_segment->keep = false;
+					current_segment->keep |= false;
 					break;
 				}
 			}
@@ -320,21 +316,17 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 		__fallthrough;
 	case AV_SAMPLE_FMT_S32:
 	{
-		std::cout << ">>>>>New Audio Packet Read<<<<<" << std::endl;
 		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
 			int32_t* samples = (int32_t*)frame->data[0];
 			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
-			std::cout << ":::::New Audio Frame Read:::::" << std::endl;
 			for (audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
-				std::cout << "Audio Sample Data: " << abs(samples[audio_frame_index])
-					<< " || Volume Threshold: " << this->linear_volume_threshold << std::endl;
 				peak_threshold_count += (abs(samples[audio_frame_index]) > this->linear_volume_threshold) ? 1 : -1;
 				if (peak_threshold_count == 5) {
-					current_segment->keep = true;
+					current_segment->keep |= true;
 					break;
 				}
 				else if (peak_threshold_count == -5) {
-					current_segment->keep = false;
+					current_segment->keep |= false;
 					break;
 				}
 			}
@@ -349,21 +341,17 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 		__fallthrough;
 	case AV_SAMPLE_FMT_U8:
 	{
-		std::cout << ">>>>>New Audio Packet Read<<<<<" << std::endl;
 		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
 			uint8_t* samples = (uint8_t*)frame->data[0];
 			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
-			std::cout << ":::::New Audio Frame Read:::::" << std::endl;
 			for (audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
-				std::cout << "Audio Sample Data: " << abs(samples[audio_frame_index])
-					<< " || Volume Threshold: " << this->linear_volume_threshold << std::endl;
 				peak_threshold_count += (abs(samples[audio_frame_index]) > this->linear_volume_threshold) ? 1 : -1;
 				if (peak_threshold_count == 5) {
-					current_segment->keep = true;
+					current_segment->keep |= true;
 					break;
 				}
 				else if (peak_threshold_count == -5) {
-					current_segment->keep = false;
+					current_segment->keep |= false;
 					break;
 				}
 			}
@@ -378,21 +366,17 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 		__fallthrough;
 	case AV_SAMPLE_FMT_DBL:
 	{
-		std::cout << ">>>>>New Audio Packet Read<<<<<" << std::endl;
 		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
 			double* samples = (double*)frame->data[0];
 			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
-			std::cout << ":::::New Audio Frame Read:::::" << std::endl;
 			for (audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
-				std::cout << "Audio Sample Data: " << fabs(samples[audio_frame_index])
-					<< " || Volume Threshold: " << this->linear_volume_threshold << std::endl;
 				peak_threshold_count += (fabs(samples[audio_frame_index]) > this->linear_volume_threshold) ? 1 : -1;
 				if (peak_threshold_count == 5) {
-					current_segment->keep = true;
+					current_segment->keep |= true;
 					break;
 				}
 				else if (peak_threshold_count == -5) {
-					current_segment->keep = false;
+					current_segment->keep |= false;
 					break;
 				}
 			}
@@ -475,7 +459,7 @@ void VideoManager::invokeQueueSM() {
 	case 0b00:
 		// Pop one
 		if (!outputQueue.empty()) {
-			//this->popHalfQueue(this->outputQueue.front());
+			this->popHalfQueue(this->outputQueue.front());
 			delete this->outputQueue.front();
 			this->outputQueue.pop();
 			this->writeOutBufferState <<= 1;
@@ -490,7 +474,7 @@ void VideoManager::invokeQueueSM() {
 	case 0b01:
 	case 0b10:
 		// Write Both
-		//this->writeFullQueue();
+		this->writeFullQueue();
 		this->writeOutBufferState = 0;
 		std::cout << "After 0b01 or 0b10 Shift : "
 			<< ((this->writeOutBufferState & 4) ? '1' : '0')
@@ -500,7 +484,7 @@ void VideoManager::invokeQueueSM() {
 		break;
 	case 0b11:
 		//Write 1
-		//this->writeHalfQueue();
+		this->writeHalfQueue();
 		this->writeOutBufferState <<= 1;
 		this->writeOutBufferState &= 0b011;
 		std::cout << "After 0b11 : "
@@ -548,6 +532,7 @@ void VideoManager::writeOutputBuffer(std::queue<VideoSegment*>* outputBuffer, Vi
 	if (this->reached_end != AVERROR_EOF) {
 		outputBuffer->push(current_segment);
 		outputBuffer->front()->keep = outputBuffer->front()->keep || current_segment->keep;
+		std::cout << "Writing Video Segment: Keep = " << outputBuffer->front()->keep << std::endl;
 	}
 	else {
 		outputBuffer->push(current_segment);
@@ -618,21 +603,24 @@ void VideoManager::writeOutLoop() {
 		// If PTS exceeds, push and reset
 		packet_duration = packet->duration * av_q2d(input_ctx->streams[packet->stream_index]->time_base);
 		if (running_duration + packet_duration > 1.0f && push_clear_buffer) {
-			std::cout << "=========STARTING NEW VIDEOSEGMENT==============" << std::endl;
 			current_segment->next_pts = this->packet->pts;
 			current_segment->next_dts = this->packet->dts;
 			this->writeOutputBuffer(&outputBuffer, current_segment);
 
 			// Reset and push recent packet
+			std::cout << "=========STARTING NEW VIDEOSEGMENT==============" << std::endl;
 			running_duration = 0.0f;
 			current_segment = new VideoSegment();
 			current_segment->start_pts = this->packet->pts;
 			current_segment->start_dts = this->packet->dts;
-			current_segment->queue.push(this->packet);
+
+			AVPacket* new_packet = av_packet_clone(this->packet);
+			current_segment->queue.push(new_packet);
 		}
 		else {
 			running_duration += packet_duration;
-			current_segment->queue.push(this->packet);
+			AVPacket* new_packet = av_packet_clone(this->packet);
+			current_segment->queue.push(new_packet);
 		}
 	}
 }
@@ -669,3 +657,5 @@ void VideoManager::buildVideo() {
 		return;
 	}
 }
+
+//© 2025[Derek Spaulding].All rights reserved.
