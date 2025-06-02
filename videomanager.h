@@ -29,9 +29,7 @@ private:
     int video_stream_idx;
     float linear_volume_threshold;
 
-    AVPacket* packet;
     AVPacket* out_pkt_ptr;
-    AVFrame* frame;
     double packets_per_sec;
     unsigned char writeOutBufferState;
     int reached_end;
