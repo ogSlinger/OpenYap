@@ -57,10 +57,12 @@ private:
     int64_t DTS_offset;
     bool is_audible;
     
-
 public:
     VideoManager(const char* input_file, const char* output_file);
     ~VideoManager();
+    void buildVideo();
+
+private: 
     void openInput();
     void setInputContext();
     void setAudioStreamIndex(int index);
@@ -75,10 +77,9 @@ public:
     void writeFileHeader();
     void writeFileTrailer();
     void setVideoContext();
-    void setAudiocontext();
-    void buildVideo();
-    void calculateLinearScaleThreshold(int& bytes_per_sample);
-    void calculateFrameAudio(VideoSegment* current_segment, AVPacket* packet, int bytes_per_sample);
+    void setAudiocontext();   
+    void calculateLinearScaleThreshold();
+    void calculateFrameAudio(VideoSegment* current_segment, AVPacket* packet);
     void writeFullQueue();
     void writeHalfQueue();
     void popHalfQueue(std::queue<VideoSegment*>* outputBuffer);

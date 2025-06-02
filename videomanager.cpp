@@ -16,7 +16,7 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 
 	this->packets_per_sec = -1;
 	this->dead_space_buffer = 5;
-	this->volume_threshold_db = -10.0f;
+	this->volume_threshold_db = -20.0f;
 
 	this->current_segment.start_pts = AV_NOPTS_VALUE;
 	this->current_segment.start_dts = AV_NOPTS_VALUE;
@@ -203,46 +203,22 @@ void VideoManager::setAudiocontext() {
 	}
 }
 
-void VideoManager::calculateLinearScaleThreshold(int& bytes_per_sample) {
-	switch (this->audio_ctx->sample_fmt) {
-	case AV_SAMPLE_FMT_U8:
-	case AV_SAMPLE_FMT_U8P:
-		bytes_per_sample = 1;
-		break;
-	case AV_SAMPLE_FMT_S16:
-	case AV_SAMPLE_FMT_S16P:
-		bytes_per_sample = 2;
-		break;
-	case AV_SAMPLE_FMT_S32:
-	case AV_SAMPLE_FMT_S32P:
-	case AV_SAMPLE_FMT_FLT:
-	case AV_SAMPLE_FMT_FLTP:
-		bytes_per_sample = 4;
-		break;
-	case AV_SAMPLE_FMT_DBL:
-	case AV_SAMPLE_FMT_DBLP:
-		bytes_per_sample = 8;
-		break;
-	}
-
+void VideoManager::calculateLinearScaleThreshold() {
 	switch (this->audio_ctx->sample_fmt) {
 	case AV_SAMPLE_FMT_S16:
 		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f) * 32767.0f;
-		bytes_per_sample *= this->audio_ctx->ch_layout.nb_channels;
 		break;
 	case AV_SAMPLE_FMT_S16P:
 		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f) * 32767.0f;
 		break;
 	case AV_SAMPLE_FMT_FLT:
 		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f);
-		bytes_per_sample *= this->audio_ctx->ch_layout.nb_channels;
 		break;
 	case AV_SAMPLE_FMT_FLTP:
 		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f);
 		break;
 	case AV_SAMPLE_FMT_S32:
 		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f) * 2147483647.0f;
-		bytes_per_sample *= this->audio_ctx->ch_layout.nb_channels;
 		break;
 	case AV_SAMPLE_FMT_S32P:
 		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f) * 2147483647.0f;
@@ -250,14 +226,12 @@ void VideoManager::calculateLinearScaleThreshold(int& bytes_per_sample) {
 	case AV_SAMPLE_FMT_U8:
 		// U8 is unsigned: 0-255, with 128 as zero point
 		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f) * 128.0f;
-		bytes_per_sample *= this->audio_ctx->ch_layout.nb_channels;
 		break;
 	case AV_SAMPLE_FMT_U8P:
 		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f) * 128.0f;
 		break;
 	case AV_SAMPLE_FMT_DBL:
 		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f);
-		bytes_per_sample *= this->audio_ctx->ch_layout.nb_channels;
 		break;
 	case AV_SAMPLE_FMT_DBLP:
 		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f);
@@ -268,149 +242,171 @@ void VideoManager::calculateLinearScaleThreshold(int& bytes_per_sample) {
 	}
 }
 
-void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* packet, int bytes_per_sample) {
+void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* packet) {
 	int peak_threshold_count = 0;
-	int channels = 0;
+	double sample = 0;
+	int audio_frame_index = 0;
+	int channels = this->audio_ctx->ch_layout.nb_channels;
 	int sample_count = 0;
+	int num_increment = 8;
+	bool is_planar = false;
 	avcodec_send_packet(this->audio_ctx, packet);
 	AVFrame* frame = av_frame_alloc();
 
 	switch (this->audio_ctx->sample_fmt) {
-	case AV_SAMPLE_FMT_S16:
 	case AV_SAMPLE_FMT_S16P:
+		num_increment *= channels;
+		is_planar = true;
+		__fallthrough;
+	case AV_SAMPLE_FMT_S16:
 	{
-		int16_t* samples = 0;
-		int num_increment = 0;
-		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
-			channels = frame->ch_layout.nb_channels;
-			sample_count = frame->nb_samples * channels;
-			samples = (int16_t*)frame->data;
-			num_increment = 8 * channels;
-
-			for (int audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
-				if (abs(samples[audio_frame_index]) > this->linear_volume_threshold) {
-					peak_threshold_count++;
-					if (peak_threshold_count == 5) {
-						current_segment->keep = true;
-						break;
-					}
-				}
-			}
-			av_frame_unref(frame);
-			if (current_segment->keep == true) { break; }
-		}
-	}
-	break;
-	
-	case AV_SAMPLE_FMT_FLT:
-	case AV_SAMPLE_FMT_FLTP:
-	{
-		float* samples = 0;
-		int num_increment = 0;
 		std::cout << ">>>>>New Audio Packet Read<<<<<" << std::endl;
 		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
-			channels = frame->ch_layout.nb_channels;
-			sample_count = frame->nb_samples * channels;
-			samples = (float*)frame->data[0];
-			num_increment = 8 * channels;
+			int16_t* samples = (int16_t*)frame->data[0];
+			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
 			std::cout << ":::::New Audio Frame Read:::::" << std::endl;
-			for (int audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
-				std::cout << "Audio Sample Data: " << fabs(samples[audio_frame_index]) << " || Volume Threshold: " << this->linear_volume_threshold << std::endl;
-				if (fabs(samples[audio_frame_index]) > this->linear_volume_threshold) {
-					peak_threshold_count++;
-					if (peak_threshold_count == 5) {
-						current_segment->keep = true;
-						break;
-					}
+			for (audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
+				std::cout << "Audio Sample Data: " << abs(samples[audio_frame_index])
+					<< " || Volume Threshold: " << this->linear_volume_threshold << std::endl;
+				peak_threshold_count += (abs(samples[audio_frame_index]) > this->linear_volume_threshold) ? 1 : -1;
+				if (peak_threshold_count == 5) {
+					current_segment->keep = true;
+					break;
+				}
+				else if (peak_threshold_count == -5) {
+					current_segment->keep = false;
+					break;
 				}
 			}
 			av_frame_unref(frame);
 			if (current_segment->keep == true) { break; }
 		}
 	}
-	break;
-
-	case AV_SAMPLE_FMT_S32:
+		break;
+	case AV_SAMPLE_FMT_FLTP:
+		num_increment *= channels;
+		is_planar = true;
+		__fallthrough;
+	case AV_SAMPLE_FMT_FLT:
+	{
+		std::cout << ">>>>>New Audio Packet Read<<<<<" << std::endl;
+		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
+			float* samples = (float*)frame->data[0];
+			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
+			std::cout << ":::::New Audio Frame Read:::::" << std::endl;
+			for (audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
+				std::cout << "Audio Sample Data: " << fabs(samples[audio_frame_index])
+					<< " || Volume Threshold: " << this->linear_volume_threshold << std::endl;
+				peak_threshold_count += (fabs(samples[audio_frame_index]) > this->linear_volume_threshold) ? 1 : -1;
+				if (peak_threshold_count == 5) {
+					current_segment->keep = true;
+					break;
+				}
+				else if (peak_threshold_count == -5) {
+					current_segment->keep = false;
+					break;
+				}
+			}
+			av_frame_unref(frame);
+			if (current_segment->keep == true) { 
+				std::cout << "PEAK DETECTED!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" << std::endl;
+				break; }
+		}
+	}
+		break;
 	case AV_SAMPLE_FMT_S32P:
+		num_increment *= channels;
+		is_planar = true;
+		__fallthrough;
+	case AV_SAMPLE_FMT_S32:
 	{
-		int32_t* samples = 0;
-		int num_increment = 0;
+		std::cout << ">>>>>New Audio Packet Read<<<<<" << std::endl;
 		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
-			channels = frame->ch_layout.nb_channels;
-			sample_count = frame->nb_samples * channels;
-			samples = (int32_t*)frame->data;
-			num_increment = 8 * channels;
-
-			for (int audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
-				if (abs(samples[audio_frame_index]) > this->linear_volume_threshold) {
-					peak_threshold_count++;
-					if (peak_threshold_count == 5) {
-						current_segment->keep = true;
-						break;
-					}
+			int32_t* samples = (int32_t*)frame->data[0];
+			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
+			std::cout << ":::::New Audio Frame Read:::::" << std::endl;
+			for (audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
+				std::cout << "Audio Sample Data: " << abs(samples[audio_frame_index])
+					<< " || Volume Threshold: " << this->linear_volume_threshold << std::endl;
+				peak_threshold_count += (abs(samples[audio_frame_index]) > this->linear_volume_threshold) ? 1 : -1;
+				if (peak_threshold_count == 5) {
+					current_segment->keep = true;
+					break;
+				}
+				else if (peak_threshold_count == -5) {
+					current_segment->keep = false;
+					break;
 				}
 			}
 			av_frame_unref(frame);
 			if (current_segment->keep == true) { break; }
 		}
 	}
-	break;
-
-	case AV_SAMPLE_FMT_U8:
+		break;
 	case AV_SAMPLE_FMT_U8P:
+		num_increment *= channels;
+		is_planar = true;
+		__fallthrough;
+	case AV_SAMPLE_FMT_U8:
 	{
-		uint8_t* samples = 0;
-		int num_increment = 0;
+		std::cout << ">>>>>New Audio Packet Read<<<<<" << std::endl;
 		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
-			channels = frame->ch_layout.nb_channels;
-			sample_count = frame->nb_samples * channels;
-			samples = (uint8_t*)frame->data;
-			num_increment = 8 * channels;
-
-			for (int audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
-				if (abs(samples[audio_frame_index] - 128) > this->linear_volume_threshold) {
-					peak_threshold_count++;
-					if (peak_threshold_count == 5) {
-						current_segment->keep = true;
-						break;
-					}
+			uint8_t* samples = (uint8_t*)frame->data[0];
+			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
+			std::cout << ":::::New Audio Frame Read:::::" << std::endl;
+			for (audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
+				std::cout << "Audio Sample Data: " << abs(samples[audio_frame_index])
+					<< " || Volume Threshold: " << this->linear_volume_threshold << std::endl;
+				peak_threshold_count += (abs(samples[audio_frame_index]) > this->linear_volume_threshold) ? 1 : -1;
+				if (peak_threshold_count == 5) {
+					current_segment->keep = true;
+					break;
+				}
+				else if (peak_threshold_count == -5) {
+					current_segment->keep = false;
+					break;
 				}
 			}
 			av_frame_unref(frame);
 			if (current_segment->keep == true) { break; }
 		}
 	}
-	break;
-
-	case AV_SAMPLE_FMT_DBL:
+		break;
 	case AV_SAMPLE_FMT_DBLP:
+		num_increment *= channels;
+		is_planar = true;
+		__fallthrough;
+	case AV_SAMPLE_FMT_DBL:
 	{
-		double* samples = 0;
-		int num_increment = 0;
+		std::cout << ">>>>>New Audio Packet Read<<<<<" << std::endl;
 		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
-			channels = frame->ch_layout.nb_channels;
-			sample_count = frame->nb_samples * channels;
-			samples = (double*)frame->data;
-			num_increment = 8 * channels;
-
-			for (int audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
-				if (fabs(samples[audio_frame_index]) > this->linear_volume_threshold) {
-					peak_threshold_count++;
-					if (peak_threshold_count == 5) {
-						current_segment->keep = true;
-						break;
-					}
+			double* samples = (double*)frame->data[0];
+			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
+			std::cout << ":::::New Audio Frame Read:::::" << std::endl;
+			for (audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
+				std::cout << "Audio Sample Data: " << fabs(samples[audio_frame_index])
+					<< " || Volume Threshold: " << this->linear_volume_threshold << std::endl;
+				peak_threshold_count += (fabs(samples[audio_frame_index]) > this->linear_volume_threshold) ? 1 : -1;
+				if (peak_threshold_count == 5) {
+					current_segment->keep = true;
+					break;
+				}
+				else if (peak_threshold_count == -5) {
+					current_segment->keep = false;
+					break;
 				}
 			}
 			av_frame_unref(frame);
 			if (current_segment->keep == true) { break; }
 		}
 	}
+		break;
 	break;
 
 	default:
 		break;
 	}
+	
 	av_frame_free(&frame);
 }
 
@@ -479,7 +475,7 @@ void VideoManager::invokeQueueSM() {
 	case 0b00:
 		// Pop one
 		if (!outputQueue.empty()) {
-			this->popHalfQueue(this->outputQueue.front());
+			//this->popHalfQueue(this->outputQueue.front());
 			delete this->outputQueue.front();
 			this->outputQueue.pop();
 			this->writeOutBufferState <<= 1;
@@ -494,7 +490,7 @@ void VideoManager::invokeQueueSM() {
 	case 0b01:
 	case 0b10:
 		// Write Both
-		this->writeFullQueue();
+		//this->writeFullQueue();
 		this->writeOutBufferState = 0;
 		std::cout << "After 0b01 or 0b10 Shift : "
 			<< ((this->writeOutBufferState & 4) ? '1' : '0')
@@ -504,7 +500,7 @@ void VideoManager::invokeQueueSM() {
 		break;
 	case 0b11:
 		//Write 1
-		this->writeHalfQueue();
+		//this->writeHalfQueue();
 		this->writeOutBufferState <<= 1;
 		this->writeOutBufferState &= 0b011;
 		std::cout << "After 0b11 : "
@@ -580,7 +576,7 @@ void VideoManager::writeOutLoop() {
 	int sample_count = 0;
 	double num_audio_packets = 0;
 	double running_db_total = 0;
-	this->calculateLinearScaleThreshold(bytes_per_sample);
+	this->calculateLinearScaleThreshold();
 
 	//Loop through the whole input file
 	while ((this->reached_end = av_read_frame(this->input_ctx, this->packet)) >= 0) {
@@ -616,7 +612,7 @@ void VideoManager::writeOutLoop() {
 
 		// if packet is audio
 		if (this->packet->stream_index == this->audio_stream_idx) {
-			this->calculateFrameAudio(current_segment, packet, bytes_per_sample);
+			this->calculateFrameAudio(current_segment, packet);
 		}
 
 		// If PTS exceeds, push and reset
