@@ -28,7 +28,6 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 
 	this->PTS_offset = 0;
 	this->DTS_offset = 0;
-	this->is_audible = false;
 
 	this->packet = av_packet_alloc();
 	this->frame = av_frame_alloc();
@@ -242,9 +241,10 @@ void VideoManager::calculateLinearScaleThreshold() {
 	}
 }
 
+
+
 void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* packet) {
 	int peak_threshold_count = 0;
-	double sample = 0;
 	int audio_frame_index = 0;
 	int channels = this->audio_ctx->ch_layout.nb_channels;
 	int sample_count = 0;
@@ -263,19 +263,11 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
 			int16_t* samples = (int16_t*)frame->data[0];
 			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
-			for (audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
-				peak_threshold_count += (abs(samples[audio_frame_index]) > this->linear_volume_threshold) ? 1 : -1;
-				if (peak_threshold_count == 5) {
-					current_segment->keep |= true;
-					break;
-				}
-				else if (peak_threshold_count == -5) {
-					current_segment->keep |= false;
-					break;
-				}
-			}
+			current_segment->keep |= processAudioSamples(frame, samples, &channels,
+				&num_increment, peak_threshold_count, &this->linear_volume_threshold, &sample_count);
 			av_frame_unref(frame);
 			if (current_segment->keep == true) { break; }
+			else { peak_threshold_count = 0; }
 		}
 	}
 		break;
@@ -290,26 +282,16 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 			float* samples = (float*)frame->data[0];
 			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
 			//std::cout << ":::::New Audio Frame Read:::::" << std::endl;
-			for (audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
-				//std::cout << "Audio Sample Data: " << fabs(samples[audio_frame_index])
-					//<< " || Volume Threshold: " << this->linear_volume_threshold << std::endl;
-				peak_threshold_count += (fabs(samples[audio_frame_index]) > this->linear_volume_threshold) ? 1 : -1;
-				if (peak_threshold_count == 5) {
-					current_segment->keep |= true;
-					break;
-				}
-				else if (peak_threshold_count == -5) {
-					current_segment->keep |= false;
-					break;
-				}
-			}
+			current_segment->keep |= processAudioSamples(frame, samples, &channels,
+				&num_increment, peak_threshold_count, &this->linear_volume_threshold, &sample_count);
 			av_frame_unref(frame);
-			if (current_segment->keep == true) { 
+			if (current_segment->keep == true) {
 				std::cout << "PEAK DETECTED!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" << std::endl;
 				break; }
+			else { peak_threshold_count = 0; }
 		}
 	}
-		break;
+	break;
 	case AV_SAMPLE_FMT_S32P:
 		num_increment *= channels;
 		is_planar = true;
@@ -319,22 +301,14 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
 			int32_t* samples = (int32_t*)frame->data[0];
 			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
-			for (audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
-				peak_threshold_count += (abs(samples[audio_frame_index]) > this->linear_volume_threshold) ? 1 : -1;
-				if (peak_threshold_count == 5) {
-					current_segment->keep |= true;
-					break;
-				}
-				else if (peak_threshold_count == -5) {
-					current_segment->keep |= false;
-					break;
-				}
-			}
+			current_segment->keep |= processAudioSamples(frame, samples, &channels,
+				&num_increment, peak_threshold_count, &this->linear_volume_threshold, &sample_count);
 			av_frame_unref(frame);
 			if (current_segment->keep == true) { break; }
+			else { peak_threshold_count = 0; }
 		}
 	}
-		break;
+	break;
 	case AV_SAMPLE_FMT_U8P:
 		num_increment *= channels;
 		is_planar = true;
@@ -344,22 +318,14 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
 			uint8_t* samples = (uint8_t*)frame->data[0];
 			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
-			for (audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
-				peak_threshold_count += (abs(samples[audio_frame_index]) > this->linear_volume_threshold) ? 1 : -1;
-				if (peak_threshold_count == 5) {
-					current_segment->keep |= true;
-					break;
-				}
-				else if (peak_threshold_count == -5) {
-					current_segment->keep |= false;
-					break;
-				}
-			}
+			current_segment->keep |= processAudioSamples(frame, samples, &channels,
+				&num_increment, peak_threshold_count, &this->linear_volume_threshold, &sample_count);
 			av_frame_unref(frame);
 			if (current_segment->keep == true) { break; }
+			else { peak_threshold_count = 0; }
 		}
 	}
-		break;
+	break;
 	case AV_SAMPLE_FMT_DBLP:
 		num_increment *= channels;
 		is_planar = true;
@@ -369,19 +335,11 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
 			double* samples = (double*)frame->data[0];
 			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
-			for (audio_frame_index = 0; audio_frame_index < sample_count; audio_frame_index += num_increment) {
-				peak_threshold_count += (fabs(samples[audio_frame_index]) > this->linear_volume_threshold) ? 1 : -1;
-				if (peak_threshold_count == 5) {
-					current_segment->keep |= true;
-					break;
-				}
-				else if (peak_threshold_count == -5) {
-					current_segment->keep |= false;
-					break;
-				}
-			}
+			current_segment->keep |= processAudioSamples(frame, samples, &channels,
+				&num_increment, peak_threshold_count, &this->linear_volume_threshold, &sample_count);
 			av_frame_unref(frame);
 			if (current_segment->keep == true) { break; }
+			else { peak_threshold_count = 0; }
 		}
 	}
 		break;
