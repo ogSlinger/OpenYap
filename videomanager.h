@@ -25,6 +25,8 @@ private:
     AVFormatContext* output_ctx;
     AVCodecContext* video_codec_ctx;
     AVCodecContext* audio_ctx;
+    AVCodecContext* video_decoder_ctx;
+    AVCodecContext* audio_decoder_ctx;
     int audio_stream_idx;
     int video_stream_idx;
     float linear_volume_threshold;
@@ -45,14 +47,16 @@ private:
 
         VideoSegment()
             : start_pts(-1), start_dts(-1), next_pts(-1), next_dts(-1), queue(), keep(false), ready_to_push(false) {}
-        VideoSegment(int64_t start_pts, int64_t start_dts, int64_t next_pts, int64_t next_dts, std::queue<AVPacket*>* queue_ptr, bool keep_flag, bool push_flag)
+        VideoSegment(int64_t start_pts, int64_t start_dts, int64_t next_pts, int64_t next_dts, std::queue<AVPacket*>* queue_ptr, bool keep_flag, bool push_flag, int64_t audio_duration)
             : start_pts(start_pts), start_dts(start_dts), next_pts(next_pts), next_dts(next_dts), queue(), keep(keep_flag), ready_to_push(push_flag) {}
     };
     VideoSegment current_segment;
     std::queue<std::queue<VideoSegment*>*> outputQueue;
 
     float volume_threshold_db;
-    int64_t dead_space_buffer;
+    float dead_space_buffer;
+    int64_t dead_space_buffer_pts;
+    int64_t buffer_running_duration;
     int64_t PTS_offset;
     int64_t DTS_offset;
     
@@ -76,7 +80,10 @@ private:
     void writeFileHeader();
     void writeFileTrailer();
     void setVideoContext();
-    void setAudiocontext();   
+    void setAudiocontext();
+    void setVideoEncoder();
+    void setAudioEncoder();
+    void secondsToPTS();
     void calculateLinearScaleThreshold();
     void calculateFrameAudio(VideoSegment* current_segment, AVPacket* packet);
     void writeFullQueue();

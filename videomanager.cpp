@@ -16,8 +16,10 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 	this->out_pkt_ptr = nullptr;
 
 	this->packets_per_sec = -1;
-	this->dead_space_buffer = 5;
-	this->volume_threshold_db = -15.0f;
+	this->dead_space_buffer = 0.8f;
+	this->dead_space_buffer_pts = 0;
+	this->buffer_running_duration = 0;
+	this->volume_threshold_db = -20.0f;
 
 	this->current_segment.start_pts = AV_NOPTS_VALUE;
 	this->current_segment.start_dts = AV_NOPTS_VALUE;
@@ -193,6 +195,40 @@ void VideoManager::setAudiocontext() {
 	}
 }
 
+void VideoManager::setVideoEncoder() {
+	if (this->video_stream_idx >= 0) {
+		AVStream* video_stream = this->input_ctx->streams[this->video_stream_idx];
+		const AVCodec* encoder = avcodec_find_encoder(video_stream->codecpar->codec_id);
+		this->video_codec_ctx = avcodec_alloc_context3(encoder);
+		avcodec_parameters_to_context(this->video_codec_ctx, video_stream->codecpar);
+		this->video_codec_ctx->pkt_timebase = video_stream->time_base;
+		avcodec_open2(this->video_codec_ctx, encoder, NULL);
+	}
+	else {
+		this->video_codec_ctx = nullptr;
+	}
+}
+
+void VideoManager::setAudioEncoder() {
+	if (this->audio_stream_idx >= 0) {
+		AVStream* audio_stream = (this->input_ctx)->streams[this->audio_stream_idx];
+		const AVCodec* encoder = avcodec_find_encoder(audio_stream->codecpar->codec_id);
+		this->audio_ctx = avcodec_alloc_context3(encoder);
+		avcodec_parameters_to_context(this->audio_ctx, audio_stream->codecpar);
+		this->audio_ctx->pkt_timebase = audio_stream->time_base;
+		avcodec_open2(this->audio_ctx, encoder, NULL);
+	}
+	else {
+		this->audio_ctx = nullptr;
+	}
+}
+
+void VideoManager::secondsToPTS() {
+	// Convert the dead space time in seconds to what it is represented in audio PTS
+	AVRational time_base = this->input_ctx->streams[this->audio_stream_idx]->time_base;
+	this->dead_space_buffer_pts = (int64_t)(this->dead_space_buffer * time_base.den / time_base.num);
+}
+
 void VideoManager::calculateLinearScaleThreshold() {
 	switch (this->audio_ctx->sample_fmt) {
 	case AV_SAMPLE_FMT_S16:
@@ -343,8 +379,8 @@ void VideoManager::emptyOutfileBuffer(std::queue<VideoSegment*>* outputBuffer) {
 	while (!outputBuffer->empty()) {
 		while (!outputBuffer->front()->queue.empty()) {
 			this->out_pkt_ptr = outputBuffer->front()->queue.front();
-			this->out_pkt_ptr->pts -= this->PTS_offset;
-			this->out_pkt_ptr->dts -= this->DTS_offset;
+			//this->out_pkt_ptr->pts -= this->PTS_offset;
+			//this->out_pkt_ptr->dts -= this->DTS_offset;
 			std::cout << "=======WRITING OUT Packet======= " << std::endl;
 			std::cout << "PTS: " << outputBuffer->front()->queue.front()->pts << std::endl;
 			std::cout << "DTS: " << outputBuffer->front()->queue.front()->dts << std::endl;
@@ -476,8 +512,8 @@ std::queue<VideoManager::VideoSegment*>* VideoManager::copyOutputBuffer(std::que
 void VideoManager::writeOutputBuffer(std::queue<VideoSegment*>* outputBuffer, VideoSegment* current_segment) {
 	if (this->reached_end != AVERROR_EOF) {
 		outputBuffer->push(current_segment);
-		outputBuffer->front()->keep = outputBuffer->front()->keep || current_segment->keep;
-		std::cout << "Writing Video Segment: Keep = " << outputBuffer->front()->keep << std::endl;
+		outputBuffer->front()->keep |= current_segment->keep;
+		//std::cout << "Writing Video Segment: Keep = " << outputBuffer->front()->keep << std::endl;
 	}
 	else {
 		outputBuffer->push(current_segment);
@@ -487,8 +523,9 @@ void VideoManager::writeOutputBuffer(std::queue<VideoSegment*>* outputBuffer, Vi
 		return;
 	}
 
-	outputBuffer->front()->ready_to_push = (outputBuffer->size() >= this->dead_space_buffer) ? true : false;
-	if (!outputBuffer->empty() && outputBuffer->front()->ready_to_push) {
+	outputBuffer->front()->ready_to_push = (this->buffer_running_duration >= this->dead_space_buffer_pts) ? true : false;
+	if (outputBuffer->front()->ready_to_push) {
+		this->buffer_running_duration = 0;
 		std::queue<VideoManager::VideoSegment*>* newBuffer = this->copyOutputBuffer(outputBuffer);
 		this->writeToOutputQueue(newBuffer);
 		return;
@@ -501,8 +538,7 @@ void VideoManager::writeOutLoop() {
 	bool push_clear_buffer = false;
 	int audio_frame_index = 0;
 	int bytes_per_sample = av_get_bytes_per_sample(this->audio_ctx->sample_fmt);
-	double packet_duration = 0.0f;
-	double running_duration = 0.0f;
+	int64_t packet_duration = 0;
 	int sample_count = 0;
 	double num_audio_packets = 0;
 	double running_db_total = 0;
@@ -524,8 +560,6 @@ void VideoManager::writeOutLoop() {
 			(this->packet->flags & AV_PKT_FLAG_CORRUPT ? "CORRUPT " : "") << std::endl;
 		std::cout << "-------------------" << std::endl;*/
 
-		push_clear_buffer = (packet->flags & AV_PKT_FLAG_KEY);
-
 		// If EOF is reached, finish the output
 		if (this->reached_end == AVERROR_EOF) {
 			if (current_segment != nullptr) {
@@ -546,19 +580,17 @@ void VideoManager::writeOutLoop() {
 		if (packet->stream_index == this->audio_stream_idx) {
 			if (!current_segment->keep) {
 				this->calculateFrameAudio(current_segment, packet);
+				this->buffer_running_duration += packet->duration;
 			}
 		}
 
-		// If PTS exceeds, push and reset
-		packet_duration = packet->duration * av_q2d(input_ctx->streams[packet->stream_index]->time_base);
-		if (running_duration + packet_duration > 1.0f && push_clear_buffer) {
+		if (packet->flags & AV_PKT_FLAG_KEY) {	// If packet is a keyframe
 			current_segment->next_pts = packet->pts;
 			current_segment->next_dts = packet->dts;
 			this->writeOutputBuffer(&outputBuffer, current_segment);
 
 			// Reset and push recent packet
 			std::cout << "=========STARTING NEW VIDEOSEGMENT==============" << std::endl;
-			running_duration = 0.0f;
 			current_segment = new VideoSegment();
 			current_segment->start_pts = packet->pts;
 			current_segment->start_dts = packet->dts;
@@ -568,7 +600,6 @@ void VideoManager::writeOutLoop() {
 			current_segment->queue.push(new_packet);
 		}
 		else {
-			running_duration += packet_duration;
 			AVPacket* new_packet = av_packet_alloc();
 			av_packet_ref(new_packet, packet);
 			current_segment->queue.push(new_packet);
@@ -592,7 +623,10 @@ void VideoManager::buildVideo() {
 		this->createOutputStreams();
 		this->setVideoContext();
 		this->openOutputFile();
+		this->setAudioEncoder();
+		this->setVideoEncoder();
 		this->writeFileHeader();
+		this->secondsToPTS();
 	}
 	catch (const std::exception& e) {
 		std::cerr << "Setup error: " << e.what() << std::endl;
