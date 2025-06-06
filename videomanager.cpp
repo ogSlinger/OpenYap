@@ -339,7 +339,7 @@ void VideoManager::encodeAudioFrame(AVFrame* frame) {
 		}
 		if (ret < 0) { throw std::runtime_error("Sending frame to encoder error."); }
 
-		output_packet->stream_index = this->output_audio_stream->index;
+		output_packet->stream_index = this->audio_stream_idx;
 
 		av_packet_rescale_ts(output_packet,
 			this->audio_encoder_ctx->time_base,
