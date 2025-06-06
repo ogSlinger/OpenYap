@@ -23,8 +23,8 @@ private:
     const char* output_file;
     AVFormatContext* input_ctx;
     AVFormatContext* output_ctx;
-    AVCodecContext* video_codec_ctx;
-    AVCodecContext* audio_ctx;
+    AVCodecContext* video_decoder_ctx;
+    AVCodecContext* audio_decoder_ctx;
     AVCodecContext* video_encoder_ctx;
     AVCodecContext* audio_encoder_ctx;
     int audio_stream_idx;
@@ -79,10 +79,15 @@ private:
     void openOutputFile();
     void writeFileHeader();
     void writeFileTrailer();
-    void setVideoContext();
-    void setAudiocontext();
+    void setVideoDecoder();
+    void setAudioDecoder();
     void setVideoEncoder();
     void setAudioEncoder();
+    void processPacket(AVPacket* input_packet);
+    void processVideoPacket(AVPacket* input_packet);
+    void encodeVideoFrame(AVFrame* frame);
+    void processAudioPacket(AVPacket* input_packet);
+    void encodeAudioFrame(AVFrame* frame);
     void secondsToPTS();
     void calculateLinearScaleThreshold();
     void calculateFrameAudio(VideoSegment* current_segment, AVPacket* packet);

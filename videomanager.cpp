@@ -11,8 +11,8 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 
 	this->input_ctx = nullptr;
 	this->output_ctx = nullptr;
-	this->video_codec_ctx = nullptr;
-	this->audio_ctx = nullptr;
+	this->video_decoder_ctx = nullptr;
+	this->audio_decoder_ctx = nullptr;
 	this->video_encoder_ctx = nullptr;
 	this->audio_encoder_ctx = nullptr;
 	this->out_pkt_ptr = nullptr;
@@ -103,8 +103,8 @@ const AVCodec* VideoManager::getAudioCodec() {
 
 void VideoManager::setAudioCodec() {
 	// Allocate codec context
-	this->audio_ctx = avcodec_alloc_context3(this->getAudioCodec());
-	if (!this->audio_ctx) {
+	this->audio_decoder_ctx = avcodec_alloc_context3(this->getAudioCodec());
+	if (!this->audio_decoder_ctx) {
 		throw std::runtime_error("Could not allocate audio codec context");
 	}
 }
@@ -112,14 +112,14 @@ void VideoManager::setAudioCodec() {
 
 void VideoManager::copyAudioCodecParams() {
 	// Copy codec parameters based on input format
-	if (avcodec_parameters_to_context(this->audio_ctx, this->input_ctx->streams[this->audio_stream_idx]->codecpar) < 0) {
+	if (avcodec_parameters_to_context(this->audio_decoder_ctx, this->input_ctx->streams[this->audio_stream_idx]->codecpar) < 0) {
 		throw std::runtime_error("Could not copy codec parameters");
 	}
 }
 
 
 void VideoManager::openAudioCodec() {
-	if (avcodec_open2(this->audio_ctx, this->getAudioCodec(), nullptr) < 0) {
+	if (avcodec_open2(this->audio_decoder_ctx, this->getAudioCodec(), nullptr) < 0) {
 		throw std::runtime_error("Could not open audio codec");
 	}
 }
@@ -169,45 +169,45 @@ void VideoManager::writeFileTrailer() {
 	}
 }
 
-void VideoManager::setVideoContext() {
+void VideoManager::setVideoDecoder() {
 	if (this->video_stream_idx >= 0) {
 		AVStream* video_stream = this->input_ctx->streams[this->video_stream_idx];
 		const AVCodec* decoder = avcodec_find_decoder(video_stream->codecpar->codec_id);
 		if (!decoder) { throw std::runtime_error("Video decoder not found"); }
 
-		this->video_codec_ctx = avcodec_alloc_context3(decoder);
-		if (!this->video_codec_ctx) { throw std::runtime_error("Video decoder not found"); }
+		this->video_decoder_ctx = avcodec_alloc_context3(decoder);
+		if (!this->video_decoder_ctx) { throw std::runtime_error("Video decoder not found"); }
 
-		int ret = avcodec_parameters_to_context(this->video_codec_ctx, video_stream->codecpar);
+		int ret = avcodec_parameters_to_context(this->video_decoder_ctx, video_stream->codecpar);
 		if (ret < 0) { throw std::runtime_error("Video decoder parameter copy failure."); }
 
-		this->video_codec_ctx->pkt_timebase = video_stream->time_base;
-		ret = avcodec_open2(this->video_codec_ctx, decoder, NULL);
+		this->video_decoder_ctx->pkt_timebase = video_stream->time_base;
+		ret = avcodec_open2(this->video_decoder_ctx, decoder, NULL);
 		if (ret < 0) { throw std::runtime_error("Could not open video decoder."); }
 	}
 	else {
-		this->video_codec_ctx = nullptr;
+		this->video_decoder_ctx = nullptr;
 	}
 }
 
-void VideoManager::setAudiocontext() {
+void VideoManager::setAudioDecoder() {
 	if (this->audio_stream_idx >= 0) {
 		AVStream* audio_stream = (this->input_ctx)->streams[this->audio_stream_idx];
 		const AVCodec* decoder = avcodec_find_decoder(audio_stream->codecpar->codec_id);
 		if(!decoder) { throw std::runtime_error("Audio decoder not found"); }
 
-		this->audio_ctx = avcodec_alloc_context3(decoder);
-		if (!this->audio_ctx) { throw std::runtime_error("Audio decoder not found"); }
+		this->audio_decoder_ctx = avcodec_alloc_context3(decoder);
+		if (!this->audio_decoder_ctx) { throw std::runtime_error("Audio decoder not found"); }
 
-		int ret = avcodec_parameters_to_context(this->audio_ctx, audio_stream->codecpar);
+		int ret = avcodec_parameters_to_context(this->audio_decoder_ctx, audio_stream->codecpar);
 		if (ret < 0) { throw std::runtime_error("Audio decoder parameter copy failure."); }
 
-		this->audio_ctx->pkt_timebase = audio_stream->time_base;
-		ret = avcodec_open2(this->audio_ctx, decoder, NULL);
+		this->audio_decoder_ctx->pkt_timebase = audio_stream->time_base;
+		ret = avcodec_open2(this->audio_decoder_ctx, decoder, NULL);
 		if (ret < 0) { throw std::runtime_error("Could not open audio decoder."); }
 	}
 	else {
-		this->audio_ctx = nullptr;
+		this->audio_decoder_ctx = nullptr;
 	}
 }
 
@@ -253,6 +253,106 @@ void VideoManager::setAudioEncoder() {
 	}
 }
 
+void VideoManager::processPacket(AVPacket* input_packet) {
+	if (input_packet->stream_index == this->video_stream_idx) {
+		processVideoPacket(input_packet);
+	}
+	else if (input_packet->stream_index == this->audio_stream_idx) {
+		processAudioPacket(input_packet);
+	}
+}
+
+void VideoManager::processVideoPacket(AVPacket* input_packet) {
+	int ret = avcodec_send_packet(this->video_decoder_ctx, input_packet);
+	if (ret < 0) { throw std::runtime_error("Sending packet to decoder error."); }
+
+	AVFrame* frame = av_frame_alloc();
+	while (ret >= 0) {
+		ret = avcodec_receive_frame(this->video_decoder_ctx, frame);
+		if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+			break;
+		}
+		if (ret < 0) { throw std::runtime_error("Decoding packet error."); }
+
+		encodeVideoFrame(frame);
+		av_frame_unref(frame);
+	}
+	av_frame_free(&frame);
+}
+
+void VideoManager::encodeVideoFrame(AVFrame* frame) {
+	int ret = avcodec_send_frame(this->video_encoder_ctx, frame);
+	if (ret < 0) { throw std::runtime_error("Sending frame to encoder error."); }
+
+	AVPacket* output_packet = av_packet_alloc();
+	while (ret >= 0) {
+		ret = avcodec_receive_packet(this->video_encoder_ctx, output_packet);
+		if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+			break;
+		}
+		if (ret < 0) { throw std::runtime_error("Sending frame to encoder error."); }
+
+		output_packet->stream_index = this->video_stream_idx;
+
+		// Rescale timestamps to output timebase
+		av_packet_rescale_ts(output_packet,
+			this->video_encoder_ctx->time_base,
+			this->output_ctx->streams[this->video_stream_idx]->time_base);
+
+		// Write packet to output
+		ret = av_interleaved_write_frame(this->output_ctx, output_packet);
+		if (ret < 0) { throw std::runtime_error("Writing packet to encoder error."); }
+
+		av_packet_unref(output_packet);
+	}
+	av_packet_free(&output_packet);
+}
+
+void VideoManager::processAudioPacket(AVPacket* input_packet) {
+	int ret = avcodec_send_packet(this->audio_decoder_ctx, input_packet);
+	if (ret < 0) { throw std::runtime_error("Sending packet to decoder error."); }
+
+	AVFrame* frame = av_frame_alloc();
+	while (ret >= 0) {
+		ret = avcodec_receive_frame(this->audio_decoder_ctx, frame);
+		if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+			break;
+		}
+		if (ret < 0) { throw std::runtime_error("Decoding packet error."); }
+
+		encodeAudioFrame(frame);
+
+		av_frame_unref(frame);
+	}
+	av_frame_free(&frame);
+}
+
+void VideoManager::encodeAudioFrame(AVFrame* frame) {
+	int ret = avcodec_send_frame(this->audio_encoder_ctx, frame);
+	if (ret < 0) { throw std::runtime_error("Sending frame to encoder error."); }
+
+	AVPacket* output_packet = av_packet_alloc();
+	while (ret >= 0) {
+		ret = avcodec_receive_packet(this->audio_encoder_ctx, output_packet);
+		if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+			break;
+		}
+		if (ret < 0) { throw std::runtime_error("Sending frame to encoder error."); }
+
+		output_packet->stream_index = this->output_audio_stream->index;
+
+		av_packet_rescale_ts(output_packet,
+			this->audio_encoder_ctx->time_base,
+			this->output_ctx->streams[this->audio_stream_idx]->time_base);
+
+		ret = av_interleaved_write_frame(this->output_ctx, output_packet);
+		if (ret < 0) { throw std::runtime_error("Writing packet to encoder error."); }
+
+		av_packet_unref(output_packet);
+	}
+	av_packet_free(&output_packet);
+}
+
 void VideoManager::secondsToPTS() {
 	// Convert the dead space time in seconds to what it is represented in audio PTS
 	AVRational time_base = this->input_ctx->streams[this->audio_stream_idx]->time_base;
@@ -260,7 +360,7 @@ void VideoManager::secondsToPTS() {
 }
 
 void VideoManager::calculateLinearScaleThreshold() {
-	switch (this->audio_ctx->sample_fmt) {
+	switch (this->audio_decoder_ctx->sample_fmt) {
 	case AV_SAMPLE_FMT_S16:
 		this->linear_volume_threshold = pow(10.0f, this->volume_threshold_db / 20.0f) * 32767.0f;
 		break;
@@ -300,21 +400,21 @@ void VideoManager::calculateLinearScaleThreshold() {
 void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* packet) {
 	int peak_threshold_count = 0;
 	int audio_frame_index = 0;
-	int channels = this->audio_ctx->ch_layout.nb_channels;
+	int channels = this->audio_decoder_ctx->ch_layout.nb_channels;
 	int sample_count = 0;
 	int num_increment = 8;
 	bool is_planar = false;
-	avcodec_send_packet(this->audio_ctx, packet);
+	avcodec_send_packet(this->audio_decoder_ctx, packet);
 	AVFrame* frame = av_frame_alloc();
 
-	switch (this->audio_ctx->sample_fmt) {
+	switch (this->audio_decoder_ctx->sample_fmt) {
 	case AV_SAMPLE_FMT_S16P:
 		num_increment *= channels;
 		is_planar = true;
 		__fallthrough;
 	case AV_SAMPLE_FMT_S16:
 	{
-		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
+		while (avcodec_receive_frame(this->audio_decoder_ctx, frame) >= 0) {
 			int16_t* samples = (int16_t*)frame->data[0];
 			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
 			current_segment->keep |= processAudioSamples(frame, samples, &channels,
@@ -332,7 +432,7 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 	case AV_SAMPLE_FMT_FLT:
 	{
 		//std::cout << ">>>>>New Audio Packet Read<<<<<" << std::endl;
-		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
+		while (avcodec_receive_frame(this->audio_decoder_ctx, frame) >= 0) {
 			float* samples = (float*)frame->data[0];
 			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
 			//std::cout << ":::::New Audio Frame Read:::::" << std::endl;
@@ -352,7 +452,7 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 		__fallthrough;
 	case AV_SAMPLE_FMT_S32:
 	{
-		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
+		while (avcodec_receive_frame(this->audio_decoder_ctx, frame) >= 0) {
 			int32_t* samples = (int32_t*)frame->data[0];
 			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
 			current_segment->keep |= processAudioSamples(frame, samples, &channels,
@@ -368,7 +468,7 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 		__fallthrough;
 	case AV_SAMPLE_FMT_U8:
 	{
-		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
+		while (avcodec_receive_frame(this->audio_decoder_ctx, frame) >= 0) {
 			uint8_t* samples = (uint8_t*)frame->data[0];
 			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
 			current_segment->keep |= processAudioSamples(frame, samples, &channels,
@@ -385,7 +485,7 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 		__fallthrough;
 	case AV_SAMPLE_FMT_DBL:
 	{
-		while (avcodec_receive_frame(this->audio_ctx, frame) >= 0) {
+		while (avcodec_receive_frame(this->audio_decoder_ctx, frame) >= 0) {
 			double* samples = (double*)frame->data[0];
 			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
 			current_segment->keep |= processAudioSamples(frame, samples, &channels,
@@ -567,7 +667,7 @@ void VideoManager::writeOutLoop() {
 	std::queue<VideoSegment*> outputBuffer;
 	bool push_clear_buffer = false;
 	int audio_frame_index = 0;
-	int bytes_per_sample = av_get_bytes_per_sample(this->audio_ctx->sample_fmt);
+	int bytes_per_sample = av_get_bytes_per_sample(this->audio_decoder_ctx->sample_fmt);
 	int64_t packet_duration = 0;
 	int sample_count = 0;
 	double num_audio_packets = 0;
@@ -651,7 +751,7 @@ void VideoManager::buildVideo() {
 		this->openAudioCodec();
 		this->createOutputContext();
 		this->createOutputStreams();
-		this->setVideoContext();
+		this->setVideoDecoder();
 		this->openOutputFile();
 		this->setAudioEncoder();
 		this->setVideoEncoder();
