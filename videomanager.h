@@ -25,8 +25,8 @@ private:
     AVFormatContext* output_ctx;
     AVCodecContext* video_codec_ctx;
     AVCodecContext* audio_ctx;
-    AVCodecContext* video_decoder_ctx;
-    AVCodecContext* audio_decoder_ctx;
+    AVCodecContext* video_encoder_ctx;
+    AVCodecContext* audio_encoder_ctx;
     int audio_stream_idx;
     int video_stream_idx;
     float linear_volume_threshold;

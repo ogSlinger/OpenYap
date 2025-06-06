@@ -13,6 +13,8 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 	this->output_ctx = nullptr;
 	this->video_codec_ctx = nullptr;
 	this->audio_ctx = nullptr;
+	this->video_encoder_ctx = nullptr;
+	this->audio_encoder_ctx = nullptr;
 	this->out_pkt_ptr = nullptr;
 
 	this->packets_per_sec = -1;
@@ -171,10 +173,17 @@ void VideoManager::setVideoContext() {
 	if (this->video_stream_idx >= 0) {
 		AVStream* video_stream = this->input_ctx->streams[this->video_stream_idx];
 		const AVCodec* decoder = avcodec_find_decoder(video_stream->codecpar->codec_id);
+		if (!decoder) { throw std::runtime_error("Video decoder not found"); }
+
 		this->video_codec_ctx = avcodec_alloc_context3(decoder);
-		avcodec_parameters_to_context(this->video_codec_ctx, video_stream->codecpar);
+		if (!this->video_codec_ctx) { throw std::runtime_error("Video decoder not found"); }
+
+		int ret = avcodec_parameters_to_context(this->video_codec_ctx, video_stream->codecpar);
+		if (ret < 0) { throw std::runtime_error("Video decoder parameter copy failure."); }
+
 		this->video_codec_ctx->pkt_timebase = video_stream->time_base;
-		avcodec_open2(this->video_codec_ctx, decoder, NULL);
+		ret = avcodec_open2(this->video_codec_ctx, decoder, NULL);
+		if (ret < 0) { throw std::runtime_error("Could not open video decoder."); }
 	}
 	else {
 		this->video_codec_ctx = nullptr;
@@ -185,10 +194,17 @@ void VideoManager::setAudiocontext() {
 	if (this->audio_stream_idx >= 0) {
 		AVStream* audio_stream = (this->input_ctx)->streams[this->audio_stream_idx];
 		const AVCodec* decoder = avcodec_find_decoder(audio_stream->codecpar->codec_id);
+		if(!decoder) { throw std::runtime_error("Audio decoder not found"); }
+
 		this->audio_ctx = avcodec_alloc_context3(decoder);
-		avcodec_parameters_to_context(this->audio_ctx, audio_stream->codecpar);
+		if (!this->audio_ctx) { throw std::runtime_error("Audio decoder not found"); }
+
+		int ret = avcodec_parameters_to_context(this->audio_ctx, audio_stream->codecpar);
+		if (ret < 0) { throw std::runtime_error("Audio decoder parameter copy failure."); }
+
 		this->audio_ctx->pkt_timebase = audio_stream->time_base;
-		avcodec_open2(this->audio_ctx, decoder, NULL);
+		ret = avcodec_open2(this->audio_ctx, decoder, NULL);
+		if (ret < 0) { throw std::runtime_error("Could not open audio decoder."); }
 	}
 	else {
 		this->audio_ctx = nullptr;
@@ -197,29 +213,43 @@ void VideoManager::setAudiocontext() {
 
 void VideoManager::setVideoEncoder() {
 	if (this->video_stream_idx >= 0) {
-		AVStream* video_stream = this->input_ctx->streams[this->video_stream_idx];
+		AVStream* video_stream = this->output_ctx->streams[this->video_stream_idx];
 		const AVCodec* encoder = avcodec_find_encoder(video_stream->codecpar->codec_id);
-		this->video_codec_ctx = avcodec_alloc_context3(encoder);
-		avcodec_parameters_to_context(this->video_codec_ctx, video_stream->codecpar);
-		this->video_codec_ctx->pkt_timebase = video_stream->time_base;
-		avcodec_open2(this->video_codec_ctx, encoder, NULL);
+		if (!encoder) { throw std::runtime_error("Video encoder not found"); }
+
+		this->video_encoder_ctx = avcodec_alloc_context3(encoder);
+		if (!this->video_encoder_ctx) { throw std::runtime_error("Video encoder not found"); }
+
+		int ret = avcodec_parameters_to_context(this->video_encoder_ctx, video_stream->codecpar);
+		if (ret < 0) { throw std::runtime_error("Video encoder parameter copy failure.");  }
+
+		this->video_encoder_ctx->pkt_timebase = video_stream->time_base;
+		ret = avcodec_open2(this->video_encoder_ctx, encoder, NULL);
+		if (ret < 0) { throw std::runtime_error("Could not open video encoder."); }
 	}
 	else {
-		this->video_codec_ctx = nullptr;
+		this->video_encoder_ctx = nullptr;
 	}
 }
 
 void VideoManager::setAudioEncoder() {
 	if (this->audio_stream_idx >= 0) {
-		AVStream* audio_stream = (this->input_ctx)->streams[this->audio_stream_idx];
+		AVStream* audio_stream = (this->output_ctx)->streams[this->audio_stream_idx];
 		const AVCodec* encoder = avcodec_find_encoder(audio_stream->codecpar->codec_id);
-		this->audio_ctx = avcodec_alloc_context3(encoder);
-		avcodec_parameters_to_context(this->audio_ctx, audio_stream->codecpar);
-		this->audio_ctx->pkt_timebase = audio_stream->time_base;
-		avcodec_open2(this->audio_ctx, encoder, NULL);
+		if (!encoder) { throw std::runtime_error("Audio encoder not found"); }
+
+		this->audio_encoder_ctx = avcodec_alloc_context3(encoder);
+		if (!this->video_encoder_ctx) { throw std::runtime_error("Audio encoder not found"); }
+
+		int ret = avcodec_parameters_to_context(this->audio_encoder_ctx, audio_stream->codecpar);
+		if (ret < 0) { throw std::runtime_error("Audio encoder parameter copy failure."); }
+
+		this->audio_encoder_ctx->pkt_timebase = audio_stream->time_base;
+		int ret = avcodec_open2(this->audio_encoder_ctx, encoder, NULL);
+		if (ret < 0) { throw std::runtime_error("Could not open audio encoder."); }
 	}
 	else {
-		this->audio_ctx = nullptr;
+		this->audio_encoder_ctx = nullptr;
 	}
 }
 
