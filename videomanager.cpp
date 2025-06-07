@@ -685,7 +685,6 @@ void VideoManager::writeOutputBuffer(std::queue<VideoSegment*>* outputBuffer, Vi
 	if (this->reached_end != AVERROR_EOF) {
 		outputBuffer->push(current_segment);
 		outputBuffer->front()->keep |= current_segment->keep;
-		//std::cout << "Writing Video Segment: Keep = " << outputBuffer->front()->keep << std::endl;
 	}
 	else {
 		outputBuffer->push(current_segment);
@@ -749,7 +748,6 @@ void VideoManager::writeOutLoop() {
 
 			// Reset and push recent packet
 			std::cout << "=========STARTING NEW VIDEOSEGMENT==============" << std::endl;
-			std::cout << "KEYFRAME DETECTED" << std::endl;
 			VideoSegment* new_segment = new VideoSegment();
 			new_segment->start_pts = packet->pts;
 			new_segment->start_dts = packet->dts;
@@ -760,7 +758,6 @@ void VideoManager::writeOutLoop() {
 			current_segment = new_segment;
 		}
 		else {
-			std::cout << "NOT A KEYFRAME DETECTED" << std::endl;
 			AVPacket* new_packet = av_packet_alloc();
 			av_packet_ref(new_packet, packet);
 			current_segment->queue.push(new_packet);
