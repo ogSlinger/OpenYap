@@ -182,6 +182,8 @@ void VideoManager::openOutputFile() {
 }
 
 void VideoManager::writeFileHeader() {
+	this->output_ctx->streams[this->video_stream_idx]->time_base.num = this->video_decoder_ctx->time_base.num;
+	this->output_ctx->streams[this->video_stream_idx]->time_base.den = this->video_decoder_ctx->time_base.den;
 	if (avformat_write_header(this->output_ctx, nullptr) < 0) {
 		throw std::runtime_error("Error writing header");
 	}
@@ -205,8 +207,15 @@ void VideoManager::setVideoDecoder() {
 		int ret = avcodec_parameters_to_context(this->video_decoder_ctx, video_stream->codecpar);
 		if (ret < 0) { throw std::runtime_error("Video decoder parameter copy failure."); }
 
-		this->video_decoder_ctx->pkt_timebase = video_stream->time_base;
+
+		this->video_decoder_ctx->width = video_stream->codecpar->width;
+		this->video_decoder_ctx->height = video_stream->codecpar->height;
+		this->video_decoder_ctx->pix_fmt = (AVPixelFormat)video_stream->codecpar->format;
 		this->video_decoder_ctx->time_base = video_stream->time_base;
+		this->video_decoder_ctx->framerate = video_stream->codecpar->framerate;
+		this->video_decoder_ctx->bit_rate = video_stream->codecpar->bit_rate > 0 ?
+											video_stream->codecpar->bit_rate : 1000000;
+
 		ret = avcodec_open2(this->video_decoder_ctx, decoder, NULL);
 		if (ret < 0) { throw std::runtime_error("Could not open video decoder."); }
 	}
@@ -217,7 +226,7 @@ void VideoManager::setVideoDecoder() {
 
 void VideoManager::setAudioDecoder() {
 	if (this->audio_stream_idx >= 0) {
-		AVStream* audio_stream = (this->input_ctx)->streams[this->audio_stream_idx];
+		AVStream* audio_stream = this->input_ctx->streams[this->audio_stream_idx];
 		const AVCodec* decoder = avcodec_find_decoder(audio_stream->codecpar->codec_id);
 		if(!decoder) { throw std::runtime_error("Audio decoder not found"); }
 
@@ -251,12 +260,10 @@ void VideoManager::setVideoEncoder() {
 		this->video_encoder_ctx->width = this->video_decoder_ctx->width;
 		this->video_encoder_ctx->height = this->video_decoder_ctx->height;
 		this->video_encoder_ctx->pix_fmt = this->video_decoder_ctx->pix_fmt;
-		this->video_encoder_ctx->time_base = this->video_decoder_ctx->time_base;
+		this->video_encoder_ctx->time_base = av_inv_q(this->video_decoder_ctx->framerate);
 		this->video_encoder_ctx->framerate = this->video_decoder_ctx->framerate;
 		this->video_encoder_ctx->bit_rate = this->video_decoder_ctx->bit_rate > 0 ?
 											this->video_decoder_ctx->bit_rate : 1000000;
-		this->video_encoder_ctx->gop_size = 12;
-		this->video_encoder_ctx->max_b_frames = 0;
 
 		if (this->output_ctx->oformat->flags & AVFMT_GLOBALHEADER) {
 			this->video_encoder_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
@@ -302,12 +309,8 @@ void VideoManager::setAudioEncoder() {
 }
 
 void VideoManager::processPacket(AVPacket* input_packet) {
-	if (input_packet->flags & AV_PKT_FLAG_KEY) {
-		std::cout << "KEYFRAME DETECTED" << std::endl;
-	}
-	else {
-		std::cout << "NOT A KEYFRAME" << std::endl;
-	}
+	printf("2. New stream default time_base: %d/%d\n",
+		this->output_ctx->streams[this->video_stream_idx]->time_base.num, this->output_ctx->streams[this->video_stream_idx]->time_base.den);
 	if (input_packet->stream_index == this->video_stream_idx) {
 		processVideoPacket(input_packet);
 	}
@@ -335,6 +338,9 @@ void VideoManager::processVideoPacket(AVPacket* input_packet) {
 }
 
 void VideoManager::encodeVideoFrame(AVFrame* frame) {
+	bool rescale = !(this->video_encoder_ctx->time_base.num == this->output_ctx->streams[this->video_stream_idx]->time_base.num &&
+		this->video_encoder_ctx->time_base.den == this->output_ctx->streams[this->video_stream_idx]->time_base.den);
+
 	int ret = avcodec_send_frame(this->video_encoder_ctx, frame);
 	if (ret < 0) { throw std::runtime_error("Sending frame to encoder error."); }
 
@@ -348,9 +354,28 @@ void VideoManager::encodeVideoFrame(AVFrame* frame) {
 
 		output_packet->stream_index = this->video_stream_idx;
 
-		av_packet_rescale_ts(output_packet,
-			this->video_encoder_ctx->time_base,
-			this->output_ctx->streams[this->video_stream_idx]->time_base);
+		printf("BEFORE rescale - PTS: %lld, DTS: %lld\n",
+			output_packet->pts, output_packet->dts);
+		printf("Encoder time_base: %d/%d\n",
+			this->video_encoder_ctx->time_base.num, this->video_encoder_ctx->time_base.den);
+		printf("Output stream time_base: %d/%d\n",
+			this->output_ctx->streams[this->video_stream_idx]->time_base.num,
+			this->output_ctx->streams[this->video_stream_idx]->time_base.den);
+
+		if (rescale) {
+			std::cout << "RESCALING" << std::endl;
+			av_packet_rescale_ts(output_packet,
+				this->video_encoder_ctx->time_base,
+				this->output_ctx->streams[this->video_stream_idx]->time_base);
+		}
+
+		printf("After rescale - PTS: %lld, DTS: %lld\n",
+			output_packet->pts, output_packet->dts);
+		printf("Encoder time_base: %d/%d\n",
+			this->video_encoder_ctx->time_base.num, this->video_encoder_ctx->time_base.den);
+		printf("Output stream time_base: %d/%d\n",
+			this->output_ctx->streams[this->video_stream_idx]->time_base.num,
+			this->output_ctx->streams[this->video_stream_idx]->time_base.den);
 
 		ret = av_interleaved_write_frame(this->output_ctx, output_packet);
 		if (ret < 0) { throw std::runtime_error("Writing packet to encoder error."); }
@@ -602,11 +627,6 @@ void VideoManager::popHalfQueue(std::queue<VideoSegment*>* outputBuffer) {
 }
 
 void VideoManager::invokeQueueSM() {
-	std::cout << "Before SM : "
-		<< ((this->writeOutBufferState & 4) ? '1' : '0')
-		<< ((this->writeOutBufferState & 2) ? '1' : '0')
-		<< ((this->writeOutBufferState & 1) ? '1' : '0')
-		<< std::endl;
 	//State Machine Writing Output
 	switch (this->writeOutBufferState & 0b00000011) {
 	case 0b00:
@@ -617,11 +637,6 @@ void VideoManager::invokeQueueSM() {
 			this->outputQueue.pop();
 			this->writeOutBufferState <<= 1;
 			this->writeOutBufferState &= 0b011;
-			std::cout << "After Shift 0b00 : "
-				<< ((this->writeOutBufferState & 4) ? '1' : '0')
-				<< ((this->writeOutBufferState & 2) ? '1' : '0')
-				<< ((this->writeOutBufferState & 1) ? '1' : '0')
-				<< std::endl;
 		}
 		break;
 	case 0b01:
@@ -629,22 +644,12 @@ void VideoManager::invokeQueueSM() {
 		// Write Both
 		this->writeFullQueue();
 		this->writeOutBufferState = 0;
-		std::cout << "After 0b01 or 0b10 Shift : "
-			<< ((this->writeOutBufferState & 4) ? '1' : '0')
-			<< ((this->writeOutBufferState & 2) ? '1' : '0')
-			<< ((this->writeOutBufferState & 1) ? '1' : '0')
-			<< std::endl;
 		break;
 	case 0b11:
 		//Write 1
 		this->writeHalfQueue();
 		this->writeOutBufferState <<= 1;
 		this->writeOutBufferState &= 0b011;
-		std::cout << "After 0b11 : "
-			<< ((this->writeOutBufferState & 4) ? '1' : '0')
-			<< ((this->writeOutBufferState & 2) ? '1' : '0')
-			<< ((this->writeOutBufferState & 1) ? '1' : '0')
-			<< std::endl;
 		break;
 	}
 }
@@ -654,13 +659,6 @@ void VideoManager::writeToOutputQueue(std::queue<VideoSegment*>* outputBuffer) {
 		this->writeOutBufferState <<= 1;
 		this->writeOutBufferState &= 0b011;
 		this->writeOutBufferState = (outputBuffer->front()->keep) ? (this->writeOutBufferState | 0b1) : (this->writeOutBufferState | 0b0);
-		std::cout << "Adjusting before sending to SM : "
-			<< ((this->writeOutBufferState & 4) ? '1' : '0')
-			<< ((this->writeOutBufferState & 2) ? '1' : '0')
-			<< ((this->writeOutBufferState & 1) ? '1' : '0')
-			<< " TRUE? " << outputBuffer->front()->keep
-			<< " PTS? " << outputBuffer->front()->start_pts
-			<< std::endl;
 		this->outputQueue.push(outputBuffer);
 		if (outputQueue.size() == 1) {
 			this->writeOutBufferState <<= 0b1;
@@ -796,7 +794,11 @@ void VideoManager::buildVideo() {
 		this->setAudioDecoder();
 		this->setAudioEncoder();
 		this->setVideoEncoder();
+		printf("2. New stream default time_base: %d/%d\n",
+			this->output_ctx->streams[this->video_stream_idx]->time_base.num, this->output_ctx->streams[this->video_stream_idx]->time_base.den);
 		this->writeFileHeader();
+		printf("2. New stream default time_base: %d/%d\n",
+			this->output_ctx->streams[this->video_stream_idx]->time_base.num, this->output_ctx->streams[this->video_stream_idx]->time_base.den);
 		this->secondsToPTS();
 	}
 	catch (const std::exception& e) {
