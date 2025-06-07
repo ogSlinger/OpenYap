@@ -33,7 +33,7 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 
 	this->PTS_offset = 0;
 	this->DTS_offset = 0;
-
+	this->debug_variance = 0;
 }
 
 
@@ -309,8 +309,10 @@ void VideoManager::setAudioEncoder() {
 }
 
 void VideoManager::processPacket(AVPacket* input_packet) {
-	printf("2. New stream default time_base: %d/%d\n",
-		this->output_ctx->streams[this->video_stream_idx]->time_base.num, this->output_ctx->streams[this->video_stream_idx]->time_base.den);
+	this->debug_variance--;
+	std::cout << "Variance " << this->debug_variance << std::endl;
+	//printf("2. New stream default time_base: %d/%d\n",
+	//	this->output_ctx->streams[this->video_stream_idx]->time_base.num, this->output_ctx->streams[this->video_stream_idx]->time_base.den);
 	if (input_packet->stream_index == this->video_stream_idx) {
 		processVideoPacket(input_packet);
 	}
@@ -354,28 +356,11 @@ void VideoManager::encodeVideoFrame(AVFrame* frame) {
 
 		output_packet->stream_index = this->video_stream_idx;
 
-		printf("BEFORE rescale - PTS: %lld, DTS: %lld\n",
-			output_packet->pts, output_packet->dts);
-		printf("Encoder time_base: %d/%d\n",
-			this->video_encoder_ctx->time_base.num, this->video_encoder_ctx->time_base.den);
-		printf("Output stream time_base: %d/%d\n",
-			this->output_ctx->streams[this->video_stream_idx]->time_base.num,
-			this->output_ctx->streams[this->video_stream_idx]->time_base.den);
-
 		if (rescale) {
-			std::cout << "RESCALING" << std::endl;
 			av_packet_rescale_ts(output_packet,
 				this->video_encoder_ctx->time_base,
 				this->output_ctx->streams[this->video_stream_idx]->time_base);
 		}
-
-		printf("After rescale - PTS: %lld, DTS: %lld\n",
-			output_packet->pts, output_packet->dts);
-		printf("Encoder time_base: %d/%d\n",
-			this->video_encoder_ctx->time_base.num, this->video_encoder_ctx->time_base.den);
-		printf("Output stream time_base: %d/%d\n",
-			this->output_ctx->streams[this->video_stream_idx]->time_base.num,
-			this->output_ctx->streams[this->video_stream_idx]->time_base.den);
 
 		ret = av_interleaved_write_frame(this->output_ctx, output_packet);
 		if (ret < 0) { throw std::runtime_error("Writing packet to encoder error."); }
@@ -628,6 +613,7 @@ void VideoManager::popHalfQueue(std::queue<VideoSegment*>* outputBuffer) {
 
 void VideoManager::invokeQueueSM() {
 	//State Machine Writing Output
+	this->writeOutBufferState = 0b01;
 	switch (this->writeOutBufferState & 0b00000011) {
 	case 0b00:
 		// Pop one
@@ -665,6 +651,11 @@ void VideoManager::writeToOutputQueue(std::queue<VideoSegment*>* outputBuffer) {
 			this->writeOutBufferState &= 0b011;
 		}
 		else {
+			this->invokeQueueSM();
+		}
+		if (this->reached_end == AVERROR_EOF) {
+			std::cout << "INVOKING 2 STATE MACHINES" << std::endl;
+			this->invokeQueueSM();
 			this->invokeQueueSM();
 		}
 	}
@@ -715,9 +706,10 @@ void VideoManager::writeOutLoop() {
 
 	AVPacket* packet = av_packet_alloc();
 	this->reached_end = av_read_frame(this->input_ctx, packet);
-
+	this->debug_variance++;
 	//Loop through the whole input file
 	while (this->reached_end >= 0) {
+		
 		//		DEBUG
 		/*std::cout << "=== READING IN PACKET INFO ===" << std::endl;
 		std::cout << "Stream Index: " << this->packet->stream_index << std::endl;
@@ -728,13 +720,6 @@ void VideoManager::writeOutLoop() {
 		std::cout << "Flags: " << (this->packet->flags & AV_PKT_FLAG_KEY ? "KEY " : "") <<
 			(this->packet->flags & AV_PKT_FLAG_CORRUPT ? "CORRUPT " : "") << std::endl;
 		std::cout << "-------------------" << std::endl;*/
-
-		// If EOF is reached, finish the output
-		if (this->reached_end == AVERROR_EOF) {
-			if (current_segment != nullptr) {
-				writeOutputBuffer(&outputBuffer, current_segment);
-			}
-		}
 
 		if (packet->flags & AV_PKT_FLAG_KEY) {	// If packet is a keyframe
 			
@@ -768,9 +753,20 @@ void VideoManager::writeOutLoop() {
 				this->buffer_running_duration += packet->duration;
 			}
 		}
-
+		
+		this->debug_variance++;
 		packet = av_packet_alloc();
 		this->reached_end = av_read_frame(this->input_ctx, packet);
+
+		// End of file logic
+		if (this->reached_end == AVERROR_EOF) {
+			av_packet_free(&packet);
+
+			if (current_segment != nullptr) {
+				std::cout << "End of file found" << std::endl;
+				writeOutputBuffer(&outputBuffer, current_segment);
+			}
+		}
 	}
 }
 
@@ -794,11 +790,7 @@ void VideoManager::buildVideo() {
 		this->setAudioDecoder();
 		this->setAudioEncoder();
 		this->setVideoEncoder();
-		printf("2. New stream default time_base: %d/%d\n",
-			this->output_ctx->streams[this->video_stream_idx]->time_base.num, this->output_ctx->streams[this->video_stream_idx]->time_base.den);
 		this->writeFileHeader();
-		printf("2. New stream default time_base: %d/%d\n",
-			this->output_ctx->streams[this->video_stream_idx]->time_base.num, this->output_ctx->streams[this->video_stream_idx]->time_base.den);
 		this->secondsToPTS();
 	}
 	catch (const std::exception& e) {
@@ -816,6 +808,7 @@ void VideoManager::buildVideo() {
 		std::cerr << "Parse error: " << e.what() << std::endl;
 		return;
 	}
+	std::cout << "Variance " << this->debug_variance << std::endl;
 }
 
 //© 2025[Derek Spaulding].All rights reserved.

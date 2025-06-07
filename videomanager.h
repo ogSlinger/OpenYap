@@ -59,6 +59,7 @@ private:
     int64_t buffer_running_duration;
     int64_t PTS_offset;
     int64_t DTS_offset;
+    int64_t debug_variance;
     
 public:
     VideoManager(const char* input_file, const char* output_file);
