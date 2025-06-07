@@ -71,9 +71,13 @@ private:
     void setAudioStreamIndex(int index);
     void setVideoStreamIndex(int index);
     const AVCodec* getAudioCodec();
+    const AVCodec* getVideoCodec();
     void setAudioCodec();
+    void setVideoCodec();
     void copyAudioCodecParams();
+    void copyVideoCodecParams();
     void openAudioCodec();
+    void openVideoCodec();
     void createOutputContext();
     void createOutputStreams();
     void openOutputFile();
