@@ -23,10 +23,7 @@ private:
     const char* output_file;
     AVFormatContext* input_ctx;
     AVFormatContext* output_ctx;
-    AVCodecContext* video_decoder_ctx;
     AVCodecContext* audio_decoder_ctx;
-    AVCodecContext* video_encoder_ctx;
-    AVCodecContext* audio_encoder_ctx;
     int audio_stream_idx;
     int video_stream_idx;
     float linear_volume_threshold;
@@ -57,8 +54,12 @@ private:
     float dead_space_buffer;
     int64_t dead_space_buffer_pts;
     int64_t buffer_running_duration;
-    int64_t PTS_offset;
-    int64_t DTS_offset;
+    int64_t video_next_pts;
+    int64_t audio_next_pts;
+    int64_t video_pts_offset;
+    int64_t audio_pts_offset;
+    int64_t video_dts_offset;
+    int64_t audio_dts_offset;
     
 public:
     VideoManager(const char* input_file, const char* output_file);
@@ -73,26 +74,14 @@ private:
     const AVCodec* getAudioCodec();
     const AVCodec* getVideoCodec();
     void setAudioCodec();
-    void setVideoCodec();
     void copyAudioCodecParams();
-    void copyVideoCodecParams();
     void openAudioCodec();
-    void openVideoCodec();
     void createOutputContext();
     void createOutputStreams();
     void openOutputFile();
     void writeFileHeader();
     void writeFileTrailer();
-    void setVideoDecoder();
     void setAudioDecoder();
-    void setVideoEncoder();
-    void setAudioEncoder();
-    void convertAnnexBToAVCC(AVPacket* packet);
-    void processPacket(AVPacket* input_packet);
-    void processVideoPacket(AVPacket* input_packet);
-    void encodeVideoFrame(AVFrame* frame);
-    void processAudioPacket(AVPacket* input_packet);
-    void encodeAudioFrame(AVFrame* frame);
     void secondsToPTS();
     void calculateLinearScaleThreshold();
     void calculateFrameAudio(VideoSegment* current_segment, AVPacket* packet);
