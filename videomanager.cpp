@@ -33,7 +33,6 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 
 	this->PTS_offset = 0;
 	this->DTS_offset = 0;
-	this->debug_variance = 0;
 }
 
 
@@ -184,6 +183,7 @@ void VideoManager::openOutputFile() {
 void VideoManager::writeFileHeader() {
 	this->output_ctx->streams[this->video_stream_idx]->time_base.num = this->video_decoder_ctx->time_base.num;
 	this->output_ctx->streams[this->video_stream_idx]->time_base.den = this->video_decoder_ctx->time_base.den;
+
 	if (avformat_write_header(this->output_ctx, nullptr) < 0) {
 		throw std::runtime_error("Error writing header");
 	}
@@ -210,7 +210,6 @@ void VideoManager::setVideoDecoder() {
 
 		this->video_decoder_ctx->width = video_stream->codecpar->width;
 		this->video_decoder_ctx->height = video_stream->codecpar->height;
-		this->video_decoder_ctx->pix_fmt = (AVPixelFormat)video_stream->codecpar->format;
 		this->video_decoder_ctx->time_base = video_stream->time_base;
 		this->video_decoder_ctx->framerate = video_stream->codecpar->framerate;
 		this->video_decoder_ctx->bit_rate = video_stream->codecpar->bit_rate > 0 ?
@@ -257,24 +256,51 @@ void VideoManager::setVideoEncoder() {
 		int ret = avcodec_parameters_to_context(this->video_encoder_ctx, video_stream->codecpar);
 		if (ret < 0) { throw std::runtime_error("Video encoder parameter copy failure.");  }
 
+		this->video_encoder_ctx->profile = this->video_decoder_ctx->profile;
 		this->video_encoder_ctx->width = this->video_decoder_ctx->width;
 		this->video_encoder_ctx->height = this->video_decoder_ctx->height;
-		this->video_encoder_ctx->pix_fmt = this->video_decoder_ctx->pix_fmt;
+		//this->video_encoder_ctx->pix_fmt = this->video_decoder_ctx->pix_fmt;
 		this->video_encoder_ctx->time_base = av_inv_q(this->video_decoder_ctx->framerate);
 		this->video_encoder_ctx->framerate = this->video_decoder_ctx->framerate;
 		this->video_encoder_ctx->bit_rate = this->video_decoder_ctx->bit_rate > 0 ?
 											this->video_decoder_ctx->bit_rate : 1000000;
+		this->video_encoder_ctx->gop_size = this->video_decoder_ctx->gop_size;
+		this->video_encoder_ctx->refs = this->video_decoder_ctx->refs;
+		this->video_encoder_ctx->has_b_frames = this->video_decoder_ctx->has_b_frames;
+		this->video_encoder_ctx->max_b_frames = (this->video_encoder_ctx->has_b_frames) ? 1 : 0;
+
+		if (this->video_decoder_ctx->extradata_size > 0) {
+			this->video_encoder_ctx->extradata_size = this->video_decoder_ctx->extradata_size;
+			this->video_encoder_ctx->extradata = (uint8_t*)av_mallocz(this->video_decoder_ctx->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE);
+			memcpy(this->video_encoder_ctx->extradata, this->video_decoder_ctx->extradata, this->video_decoder_ctx->extradata_size);
+		}
 
 		if (this->output_ctx->oformat->flags & AVFMT_GLOBALHEADER) {
 			this->video_encoder_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 		}
 
-		if (encoder->id == AV_CODEC_ID_H264) {
-			this->video_encoder_ctx->profile = FF_PROFILE_H264_MAIN;
-		}
-
 		ret = avcodec_open2(this->video_encoder_ctx, encoder, NULL);
 		if (ret < 0) { throw std::runtime_error("Could not open video encoder."); }
+		
+		// FOr whatever reason it wants to reformat the extradata, I have to copy again.
+		if (this->video_decoder_ctx->extradata_size > 0) {
+
+			if (this->video_encoder_ctx->extradata) {
+				av_freep(&this->video_encoder_ctx->extradata);
+			}
+
+			this->video_encoder_ctx->extradata_size = this->video_decoder_ctx->extradata_size;
+			this->video_encoder_ctx->extradata = (uint8_t*)av_mallocz(this->video_decoder_ctx->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE);
+			memcpy(this->video_encoder_ctx->extradata, this->video_decoder_ctx->extradata, this->video_decoder_ctx->extradata_size);
+		}
+
+		ret = avcodec_parameters_from_context(
+			this->output_ctx->streams[this->video_stream_idx]->codecpar,
+			this->video_encoder_ctx);
+		if (ret < 0) {
+			std::cout << "Failed to copy encoder params." << std::endl;
+		}
+
 	}
 	else {
 		this->video_encoder_ctx = nullptr;
@@ -308,11 +334,22 @@ void VideoManager::setAudioEncoder() {
 	}
 }
 
+void VideoManager::convertAnnexBToAVCC(AVPacket* packet) {
+	if (!packet->data || packet->size < 4) return;
+
+	if (packet->data[0] == 0x00 && packet->data[1] == 0x00 &&
+		packet->data[2] == 0x00 && packet->data[3] == 0x01) {
+		uint32_t nal_size = packet->size - 4;
+
+		packet->data[0] = (nal_size >> 24) & 0xFF;
+		packet->data[1] = (nal_size >> 16) & 0xFF;
+		packet->data[2] = (nal_size >> 8) & 0xFF;
+		packet->data[3] = nal_size & 0xFF;
+	}
+}
+
+
 void VideoManager::processPacket(AVPacket* input_packet) {
-	this->debug_variance--;
-	std::cout << "Variance " << this->debug_variance << std::endl;
-	//printf("2. New stream default time_base: %d/%d\n",
-	//	this->output_ctx->streams[this->video_stream_idx]->time_base.num, this->output_ctx->streams[this->video_stream_idx]->time_base.den);
 	if (input_packet->stream_index == this->video_stream_idx) {
 		processVideoPacket(input_packet);
 	}
@@ -326,13 +363,22 @@ void VideoManager::processVideoPacket(AVPacket* input_packet) {
 	if (ret < 0) { throw std::runtime_error("Sending packet to decoder error."); }
 
 	AVFrame* frame = av_frame_alloc();
+	if (!frame) { throw std::runtime_error("Failed to allocate frame"); }
+
 	while (ret >= 0) {
 		ret = avcodec_receive_frame(this->video_decoder_ctx, frame);
+
 		if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
 			break;
 		}
-		if (ret < 0) { throw std::runtime_error("Decoding packet error."); }
+		if (ret < 0) { 
+			av_frame_free(&frame);
+			throw std::runtime_error("Decoding packet error."); 
+		}
 
+		if (this->video_encoder_ctx == nullptr) {
+			this->setVideoEncoder();
+		}
 		encodeVideoFrame(frame);
 		av_frame_unref(frame);
 	}
@@ -342,6 +388,21 @@ void VideoManager::processVideoPacket(AVPacket* input_packet) {
 void VideoManager::encodeVideoFrame(AVFrame* frame) {
 	bool rescale = !(this->video_encoder_ctx->time_base.num == this->output_ctx->streams[this->video_stream_idx]->time_base.num &&
 		this->video_encoder_ctx->time_base.den == this->output_ctx->streams[this->video_stream_idx]->time_base.den);
+
+	if (rescale && frame->pts != AV_NOPTS_VALUE) {
+		frame->pts = av_rescale_q(frame->pts,
+			this->video_decoder_ctx->time_base,
+			this->video_encoder_ctx->time_base);
+	}
+
+	printf("Encoder extradata size: %d\n", this->video_encoder_ctx->extradata_size);
+	if (this->video_encoder_ctx->extradata && this->video_encoder_ctx->extradata_size > 0) {
+		printf("Encoder extradata: ");
+		for (int i = 0; i < std::min(20, this->video_encoder_ctx->extradata_size); i++) {
+			printf("%02x ", this->video_encoder_ctx->extradata[i]);
+		}
+		printf("\n");
+	}
 
 	int ret = avcodec_send_frame(this->video_encoder_ctx, frame);
 	if (ret < 0) { throw std::runtime_error("Sending frame to encoder error."); }
@@ -355,11 +416,30 @@ void VideoManager::encodeVideoFrame(AVFrame* frame) {
 		if (ret < 0) { throw std::runtime_error("Sending frame to encoder error."); }
 
 		output_packet->stream_index = this->video_stream_idx;
+		this->convertAnnexBToAVCC(output_packet);
 
 		if (rescale) {
 			av_packet_rescale_ts(output_packet,
 				this->video_encoder_ctx->time_base,
 				this->output_ctx->streams[this->video_stream_idx]->time_base);
+		}
+		
+		if (output_packet->pts != AV_NOPTS_VALUE && output_packet->dts != AV_NOPTS_VALUE) {
+			if (output_packet->pts < output_packet->dts) {
+				output_packet->pts = output_packet->dts;
+			}
+		}
+
+		static int packet_count = 0;
+		if (packet_count < 5) {
+			printf("Packet %d: size=%d, keyframe=%s, first_bytes: ",
+				packet_count, output_packet->size,
+				(output_packet->flags & AV_PKT_FLAG_KEY) ? "YES" : "NO");
+			for (int i = 0; i < std::min(8, output_packet->size); i++) {
+				printf("%02x ", output_packet->data[i]);
+			}
+			printf("\n");
+			packet_count++;
 		}
 
 		ret = av_interleaved_write_frame(this->output_ctx, output_packet);
@@ -380,6 +460,10 @@ void VideoManager::processAudioPacket(AVPacket* input_packet) {
 			break;
 		}
 		if (ret < 0) { throw std::runtime_error("Decoding packet error."); }
+
+		if (this->audio_encoder_ctx == nullptr) {
+			this->setAudioEncoder();
+		}
 
 		encodeAudioFrame(frame);
 
@@ -492,11 +576,9 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 		__fallthrough;
 	case AV_SAMPLE_FMT_FLT:
 	{
-		//std::cout << ">>>>>New Audio Packet Read<<<<<" << std::endl;
 		while (avcodec_receive_frame(this->audio_decoder_ctx, frame) >= 0) {
 			float* samples = (float*)frame->data[0];
 			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
-			//std::cout << ":::::New Audio Frame Read:::::" << std::endl;
 			current_segment->keep |= processAudioSamples(frame, samples, &channels,
 				&num_increment, peak_threshold_count, &this->linear_volume_threshold, &sample_count);
 			av_frame_unref(frame);
@@ -569,12 +651,6 @@ void VideoManager::emptyOutfileBuffer(std::queue<VideoSegment*>* outputBuffer) {
 	while (!outputBuffer->empty()) {
 		while (!outputBuffer->front()->queue.empty()) {
 			this->out_pkt_ptr = outputBuffer->front()->queue.front();
-			/*std::cout << "=======WRITING OUT Packet======= " << std::endl;
-			std::cout << "PTS: " << outputBuffer->front()->queue.front()->pts << std::endl;
-			std::cout << "DTS: " << outputBuffer->front()->queue.front()->dts << std::endl;
-			std::cout << "PTS OFFSET: " << this->PTS_offset << std::endl;
-			std::cout << "DTS OFFSET: " << this->DTS_offset << std::endl;
-			std::cout << "Queue Size: " << outputBuffer->front()->queue.size() << std::endl;*/
 			this->processPacket(this->out_pkt_ptr);
 			outputBuffer->front()->queue.pop();
 		}
@@ -654,7 +730,6 @@ void VideoManager::writeToOutputQueue(std::queue<VideoSegment*>* outputBuffer) {
 			this->invokeQueueSM();
 		}
 		if (this->reached_end == AVERROR_EOF) {
-			std::cout << "INVOKING 2 STATE MACHINES" << std::endl;
 			this->invokeQueueSM();
 			this->invokeQueueSM();
 		}
@@ -706,21 +781,8 @@ void VideoManager::writeOutLoop() {
 
 	AVPacket* packet = av_packet_alloc();
 	this->reached_end = av_read_frame(this->input_ctx, packet);
-	this->debug_variance++;
 	//Loop through the whole input file
-	while (this->reached_end >= 0) {
-		
-		//		DEBUG
-		/*std::cout << "=== READING IN PACKET INFO ===" << std::endl;
-		std::cout << "Stream Index: " << this->packet->stream_index << std::endl;
-		std::cout << "PTS: " << this->packet->pts << std::endl;
-		std::cout << "DTS: " << this->packet->dts << std::endl;
-		std::cout << "Duration: " << this->packet->duration << std::endl;
-		std::cout << "Size: " << this->packet->size << " bytes" << std::endl;
-		std::cout << "Flags: " << (this->packet->flags & AV_PKT_FLAG_KEY ? "KEY " : "") <<
-			(this->packet->flags & AV_PKT_FLAG_CORRUPT ? "CORRUPT " : "") << std::endl;
-		std::cout << "-------------------" << std::endl;*/
-
+	while (this->reached_end >= 0) {		
 		if (packet->flags & AV_PKT_FLAG_KEY) {	// If packet is a keyframe
 			
 			if (current_segment != nullptr && !current_segment->queue.empty()) {
@@ -730,7 +792,6 @@ void VideoManager::writeOutLoop() {
 			}
 
 			// Reset and push recent packet
-			std::cout << "=========STARTING NEW VIDEOSEGMENT==============" << std::endl;
 			VideoSegment* new_segment = new VideoSegment();
 			new_segment->start_pts = packet->pts;
 			new_segment->start_dts = packet->dts;
@@ -754,16 +815,12 @@ void VideoManager::writeOutLoop() {
 			}
 		}
 		
-		this->debug_variance++;
 		packet = av_packet_alloc();
 		this->reached_end = av_read_frame(this->input_ctx, packet);
-
 		// End of file logic
 		if (this->reached_end == AVERROR_EOF) {
 			av_packet_free(&packet);
-
 			if (current_segment != nullptr) {
-				std::cout << "End of file found" << std::endl;
 				writeOutputBuffer(&outputBuffer, current_segment);
 			}
 		}
@@ -771,6 +828,7 @@ void VideoManager::writeOutLoop() {
 }
 
 void VideoManager::buildVideo() {
+	av_log_set_level(AV_LOG_DEBUG);
 	// Prelude initialization
 	try {
 		avformat_close_input(&this->input_ctx);
@@ -788,8 +846,6 @@ void VideoManager::buildVideo() {
 		this->openOutputFile();
 		this->setVideoDecoder();
 		this->setAudioDecoder();
-		this->setAudioEncoder();
-		this->setVideoEncoder();
 		this->writeFileHeader();
 		this->secondsToPTS();
 	}
@@ -802,13 +858,13 @@ void VideoManager::buildVideo() {
 	try {
 		this->writeOutLoop();
 		this->writeFileTrailer();
-		std::cout << "Reached End";
+		std::cout << "Reached End" <<std::endl;
 	}
 	catch (const std::exception& e) {
 		std::cerr << "Parse error: " << e.what() << std::endl;
 		return;
 	}
-	std::cout << "Variance " << this->debug_variance << std::endl;
+	
 }
 
 //© 2025[Derek Spaulding].All rights reserved.
