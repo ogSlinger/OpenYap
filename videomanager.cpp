@@ -16,7 +16,7 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 	this->out_pkt_ptr = nullptr;
 
 	this->packets_per_sec = -1;
-	this->dead_space_buffer = 0.8f;
+	this->dead_space_buffer = 1.0f;
 	this->dead_space_buffer_pts = 0;
 	this->buffer_running_duration = 0;
 	this->volume_threshold_db = -20.0f;
@@ -28,8 +28,6 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 	this->reached_end = 0;
 	this->linear_volume_threshold = 0.0f;
 
-	this->video_next_pts = 0;
-	this->audio_next_pts = 0;
 	this->video_pts_offset = 0;
 	this->audio_pts_offset = 0;
 	this->video_dts_offset = 0;
@@ -346,24 +344,21 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 }
 
 void VideoManager::emptyOutfileBuffer(std::queue<VideoSegment*>* outputBuffer) {
-	bool is_video = this->outputQueue.front()->front()->queue.front()->stream_index == this->video_stream_idx;
+	bool is_video;
 	while (!outputBuffer->empty()) {
 		while (!outputBuffer->front()->queue.empty()) {
+			is_video = this->outputQueue.front()->front()->queue.front()->stream_index == this->video_stream_idx;
 			this->out_pkt_ptr = outputBuffer->front()->queue.front();
 
 			if (is_video) {
-				this->video_next_pts = this->outputQueue.front()->front()->next_pts;
-				this->video_next_pts = this->outputQueue.front()->front()->next_dts;
-				this->out_pkt_ptr->pts += this->video_pts_offset;
-				this->out_pkt_ptr->dts += this->video_dts_offset;
+				this->out_pkt_ptr->pts -= this->video_pts_offset;
+				this->out_pkt_ptr->dts -= this->video_dts_offset;
 			}
 			else {
-				this->audio_next_pts = this->outputQueue.front()->front()->next_pts;
-				this->audio_next_pts = this->outputQueue.front()->front()->next_dts;
-				this->out_pkt_ptr->pts += this->audio_pts_offset;
-				this->out_pkt_ptr->dts += this->audio_dts_offset;
+				this->out_pkt_ptr->pts -= this->audio_pts_offset;
+				this->out_pkt_ptr->dts -= this->audio_dts_offset;
 			}
-
+			//std::cout << "*******Writing out a audio packet with PTS: " << this->out_pkt_ptr->pts << " || DTS: " << this->out_pkt_ptr->dts << std::endl;
 			av_interleaved_write_frame(this->output_ctx, out_pkt_ptr);
 			outputBuffer->front()->queue.pop();
 		}
@@ -388,10 +383,16 @@ void VideoManager::writeHalfQueue() {
 }
 
 void VideoManager::popHalfQueue(std::queue<VideoSegment*>* outputBuffer) {
-	int64_t start_pts = outputBuffer->front()->start_pts;
-	int64_t start_dts = outputBuffer->front()->start_dts;
 	while (!outputBuffer->empty()) {
 		while (!outputBuffer->front()->queue.empty()) {
+			if (outputBuffer->front()->queue.front()->stream_index == this->audio_stream_idx) {
+				this->audio_pts_offset += outputBuffer->front()->queue.front()->duration;
+				this->audio_dts_offset += outputBuffer->front()->queue.front()->duration;
+			}
+			else {
+				this->video_pts_offset += outputBuffer->front()->queue.front()->duration;
+				this->video_dts_offset += outputBuffer->front()->queue.front()->duration;
+			}
 			av_packet_free(&outputBuffer->front()->queue.front());
 			outputBuffer->front()->queue.pop();
 		}
@@ -403,7 +404,7 @@ void VideoManager::popHalfQueue(std::queue<VideoSegment*>* outputBuffer) {
 
 void VideoManager::invokeQueueSM() {
 	//State Machine Writing Output
-	this->writeOutBufferState = 0b01;
+	//this->writeOutBufferState = 0b01;
 	switch (this->writeOutBufferState & 0b00000011) {
 	case 0b00:
 		// Pop one
@@ -495,20 +496,17 @@ void VideoManager::writeOutLoop() {
 
 	AVPacket* packet = av_packet_alloc();
 	this->reached_end = av_read_frame(this->input_ctx, packet);
+
 	//Loop through the whole input file
-	while (this->reached_end >= 0) {		
-		if (packet->flags & AV_PKT_FLAG_KEY) {	// If packet is a keyframe
+	while (this->reached_end >= 0) {
+		//std::cout << "READING IN A: " << ((packet->stream_index == this->video_stream_idx) ? "VIDEO" : "AUDIO") << std::endl;
+		if ((packet->flags & AV_PKT_FLAG_KEY) && (packet->stream_index == 0)) {
 			
 			if (current_segment != nullptr && !current_segment->queue.empty()) {
-				current_segment->next_pts = packet->pts;
-				current_segment->next_dts = packet->dts;
 				this->writeOutputBuffer(&outputBuffer, current_segment);
 			}
-
 			// Reset and push recent packet
 			VideoSegment* new_segment = new VideoSegment();
-			new_segment->start_pts = packet->pts;
-			new_segment->start_dts = packet->dts;
 
 			AVPacket* new_packet = av_packet_alloc();
 			av_packet_ref(new_packet, packet);
@@ -518,6 +516,9 @@ void VideoManager::writeOutLoop() {
 		else {
 			AVPacket* new_packet = av_packet_alloc();
 			av_packet_ref(new_packet, packet);
+			if (current_segment == nullptr) {
+				current_segment = new VideoSegment();
+			}
 			current_segment->queue.push(new_packet);
 		}
 
@@ -528,6 +529,7 @@ void VideoManager::writeOutLoop() {
 				this->buffer_running_duration += packet->duration;
 			}
 		}
+
 		
 		packet = av_packet_alloc();
 		this->reached_end = av_read_frame(this->input_ctx, packet);

@@ -54,8 +54,6 @@ private:
     float dead_space_buffer;
     int64_t dead_space_buffer_pts;
     int64_t buffer_running_duration;
-    int64_t video_next_pts;
-    int64_t audio_next_pts;
     int64_t video_pts_offset;
     int64_t audio_pts_offset;
     int64_t video_dts_offset;
