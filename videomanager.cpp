@@ -16,13 +16,11 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 	this->out_pkt_ptr = nullptr;
 
 	this->packets_per_sec = -1;
-	this->dead_space_buffer = 1.0f;
+	this->dead_space_buffer = 1.5f;
 	this->dead_space_buffer_pts = 0;
 	this->buffer_running_duration = 0;
 	this->volume_threshold_db = -20.0f;
 
-	this->current_segment.start_pts = AV_NOPTS_VALUE;
-	this->current_segment.start_dts = AV_NOPTS_VALUE;
 	this->current_segment.keep = false;
 	this->writeOutBufferState = 0;
 	this->reached_end = 0;
@@ -177,7 +175,7 @@ void VideoManager::setAudioDecoder() {
 	if (this->audio_stream_idx >= 0) {
 		AVStream* audio_stream = this->input_ctx->streams[this->audio_stream_idx];
 		const AVCodec* decoder = avcodec_find_decoder(audio_stream->codecpar->codec_id);
-		if(!decoder) { throw std::runtime_error("Audio decoder not found"); }
+		if (!decoder) { throw std::runtime_error("Audio decoder not found"); }
 
 		this->audio_decoder_ctx = avcodec_alloc_context3(decoder);
 		if (!this->audio_decoder_ctx) { throw std::runtime_error("Audio decoder not found"); }
@@ -198,6 +196,7 @@ void VideoManager::secondsToPTS() {
 	// Convert the dead space time in seconds to what it is represented in audio PTS
 	AVRational time_base = this->input_ctx->streams[this->audio_stream_idx]->time_base;
 	this->dead_space_buffer_pts = (int64_t)(this->dead_space_buffer * time_base.den / time_base.num);
+	std::cout << "Buffer in PTS " << this->dead_space_buffer_pts << std::endl;
 }
 
 void VideoManager::calculateLinearScaleThreshold() {
@@ -243,7 +242,7 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 	int audio_frame_index = 0;
 	int channels = this->audio_decoder_ctx->ch_layout.nb_channels;
 	int sample_count = 0;
-	int num_increment = 8;
+	int num_increment = 0;
 	bool is_planar = false;
 	avcodec_send_packet(this->audio_decoder_ctx, packet);
 	AVFrame* frame = av_frame_alloc();
@@ -257,15 +256,16 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 	{
 		while (avcodec_receive_frame(this->audio_decoder_ctx, frame) >= 0) {
 			int16_t* samples = (int16_t*)frame->data[0];
-			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
+			sample_count = (is_planar) ? frame->nb_samples : (frame->nb_samples * channels);
+			num_increment = (sample_count / 8);
 			current_segment->keep |= processAudioSamples(frame, samples, &channels,
 				&num_increment, peak_threshold_count, &this->linear_volume_threshold, &sample_count);
 			av_frame_unref(frame);
+			peak_threshold_count = 0;
 			if (current_segment->keep == true) { break; }
-			else { peak_threshold_count = 0; }
 		}
 	}
-		break;
+	break;
 	case AV_SAMPLE_FMT_FLTP:
 		num_increment *= channels;
 		is_planar = true;
@@ -274,13 +274,13 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 	{
 		while (avcodec_receive_frame(this->audio_decoder_ctx, frame) >= 0) {
 			float* samples = (float*)frame->data[0];
-			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
+			sample_count = (is_planar) ? frame->nb_samples : (frame->nb_samples * channels);
+			num_increment = (sample_count / 8);
 			current_segment->keep |= processAudioSamples(frame, samples, &channels,
 				&num_increment, peak_threshold_count, &this->linear_volume_threshold, &sample_count);
 			av_frame_unref(frame);
-			if (current_segment->keep == true) {
-				break; }
-			else { peak_threshold_count = 0; }
+			peak_threshold_count = 0;
+			if (current_segment->keep == true) { break; }
 		}
 	}
 	break;
@@ -292,11 +292,12 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 	{
 		while (avcodec_receive_frame(this->audio_decoder_ctx, frame) >= 0) {
 			int32_t* samples = (int32_t*)frame->data[0];
-			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
+			sample_count = (is_planar) ? frame->nb_samples : (frame->nb_samples * channels);
+			num_increment = (sample_count / 8);
 			current_segment->keep |= processAudioSamples(frame, samples, &channels,
 				&num_increment, peak_threshold_count, &this->linear_volume_threshold, &sample_count);
+			peak_threshold_count = 0;
 			if (current_segment->keep == true) { break; }
-			else { peak_threshold_count = 0; }
 		}
 	}
 	break;
@@ -308,12 +309,13 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 	{
 		while (avcodec_receive_frame(this->audio_decoder_ctx, frame) >= 0) {
 			uint8_t* samples = (uint8_t*)frame->data[0];
-			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
+			sample_count = (is_planar) ? frame->nb_samples : (frame->nb_samples * channels);
+			num_increment = (sample_count / 8);
 			current_segment->keep |= processAudioSamples(frame, samples, &channels,
 				&num_increment, peak_threshold_count, &this->linear_volume_threshold, &sample_count);
 			av_frame_unref(frame);
+			peak_threshold_count = 0;
 			if (current_segment->keep == true) { break; }
-			else { peak_threshold_count = 0; }
 		}
 	}
 	break;
@@ -325,21 +327,21 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 	{
 		while (avcodec_receive_frame(this->audio_decoder_ctx, frame) >= 0) {
 			double* samples = (double*)frame->data[0];
-			sample_count = (is_planar) ? (frame->nb_samples * channels) : frame->nb_samples;
+			sample_count = (is_planar) ? frame->nb_samples : (frame->nb_samples * channels);
+			num_increment = (sample_count / 8);
 			current_segment->keep |= processAudioSamples(frame, samples, &channels,
 				&num_increment, peak_threshold_count, &this->linear_volume_threshold, &sample_count);
 			av_frame_unref(frame);
+			peak_threshold_count = 0;
 			if (current_segment->keep == true) { break; }
-			else { peak_threshold_count = 0; }
 		}
 	}
-		break;
 	break;
 
 	default:
 		break;
 	}
-	
+
 	av_frame_free(&frame);
 }
 
@@ -349,20 +351,27 @@ void VideoManager::emptyOutfileBuffer(std::queue<VideoSegment*>* outputBuffer) {
 		while (!outputBuffer->front()->queue.empty()) {
 			is_video = this->outputQueue.front()->front()->queue.front()->stream_index == this->video_stream_idx;
 			this->out_pkt_ptr = outputBuffer->front()->queue.front();
+			
+			static int64_t video_pts = 0;
+			static int64_t audio_pts = 0;
 
 			if (is_video) {
 				this->out_pkt_ptr->pts -= this->video_pts_offset;
 				this->out_pkt_ptr->dts -= this->video_dts_offset;
+				video_pts = this->out_pkt_ptr->pts;
 			}
 			else {
 				this->out_pkt_ptr->pts -= this->audio_pts_offset;
 				this->out_pkt_ptr->dts -= this->audio_dts_offset;
+				audio_pts = this->out_pkt_ptr->pts;
 			}
-			//std::cout << "*******Writing out a audio packet with PTS: " << this->out_pkt_ptr->pts << " || DTS: " << this->out_pkt_ptr->dts << std::endl;
+			if (video_pts - audio_pts > 100) {
+			//	std::cout << "BIG JUMP" << std::endl;
+			}
 			av_interleaved_write_frame(this->output_ctx, out_pkt_ptr);
 			outputBuffer->front()->queue.pop();
 		}
-		
+
 		this->out_pkt_ptr = NULL;
 		delete outputBuffer->front();
 		outputBuffer->pop();
@@ -385,13 +394,13 @@ void VideoManager::writeHalfQueue() {
 void VideoManager::popHalfQueue(std::queue<VideoSegment*>* outputBuffer) {
 	while (!outputBuffer->empty()) {
 		while (!outputBuffer->front()->queue.empty()) {
-			if (outputBuffer->front()->queue.front()->stream_index == this->audio_stream_idx) {
-				this->audio_pts_offset += outputBuffer->front()->queue.front()->duration;
-				this->audio_dts_offset += outputBuffer->front()->queue.front()->duration;
-			}
-			else {
+			if (outputBuffer->front()->queue.front()->stream_index == this->video_stream_idx) {
 				this->video_pts_offset += outputBuffer->front()->queue.front()->duration;
 				this->video_dts_offset += outputBuffer->front()->queue.front()->duration;
+			}
+			else {
+				this->audio_pts_offset += outputBuffer->front()->queue.front()->duration;
+				this->audio_dts_offset += outputBuffer->front()->queue.front()->duration;
 			}
 			av_packet_free(&outputBuffer->front()->queue.front());
 			outputBuffer->front()->queue.pop();
@@ -493,7 +502,7 @@ void VideoManager::writeOutLoop() {
 	double num_audio_packets = 0;
 	double running_db_total = 0;
 	this->calculateLinearScaleThreshold();
-
+	bool first_audio_is_ref = false;
 	AVPacket* packet = av_packet_alloc();
 	this->reached_end = av_read_frame(this->input_ctx, packet);
 
@@ -501,7 +510,7 @@ void VideoManager::writeOutLoop() {
 	while (this->reached_end >= 0) {
 		//std::cout << "READING IN A: " << ((packet->stream_index == this->video_stream_idx) ? "VIDEO" : "AUDIO") << std::endl;
 		if ((packet->flags & AV_PKT_FLAG_KEY) && (packet->stream_index == 0)) {
-			
+
 			if (current_segment != nullptr && !current_segment->queue.empty()) {
 				this->writeOutputBuffer(&outputBuffer, current_segment);
 			}
@@ -512,8 +521,15 @@ void VideoManager::writeOutLoop() {
 			av_packet_ref(new_packet, packet);
 			new_segment->queue.push(new_packet);
 			current_segment = new_segment;
+			first_audio_is_ref = false;
 		}
 		else {
+			if (packet->stream_index == this->audio_stream_idx && !(packet->flags & AV_PKT_FLAG_KEY) && !first_audio_is_ref) {
+				std::cout << "First audio packet was not keyframed first" << std::endl;
+				first_audio_is_ref = true;
+				this->reached_end = av_read_frame(this->input_ctx, packet);
+				continue;
+			}
 			AVPacket* new_packet = av_packet_alloc();
 			av_packet_ref(new_packet, packet);
 			if (current_segment == nullptr) {
@@ -524,13 +540,13 @@ void VideoManager::writeOutLoop() {
 
 		// if packet is audio
 		if (packet->stream_index == this->audio_stream_idx) {
-			if (!current_segment->keep) {
+			if (packet->flags & AV_PKT_FLAG_KEY) {
 				this->calculateFrameAudio(current_segment, packet);
-				this->buffer_running_duration += packet->duration;
 			}
+			this->buffer_running_duration += packet->duration;
 		}
 
-		
+
 		packet = av_packet_alloc();
 		this->reached_end = av_read_frame(this->input_ctx, packet);
 		// End of file logic
@@ -544,7 +560,7 @@ void VideoManager::writeOutLoop() {
 }
 
 void VideoManager::buildVideo() {
-	//av_log_set_level(AV_LOG_DEBUG);
+	// av_log_set_level(AV_LOG_DEBUG);
 	// Prelude initialization
 	try {
 		avformat_close_input(&this->input_ctx);
@@ -570,13 +586,13 @@ void VideoManager::buildVideo() {
 	try {
 		this->writeOutLoop();
 		this->writeFileTrailer();
-		std::cout << "Reached End" <<std::endl;
+		std::cout << "Reached End" << std::endl;
 	}
 	catch (const std::exception& e) {
 		std::cerr << "Parse error: " << e.what() << std::endl;
 		return;
 	}
-	
+
 }
 
 //© 2025[Derek Spaulding].All rights reserved.
