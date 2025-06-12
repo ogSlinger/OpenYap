@@ -87,6 +87,7 @@ private:
     std::queue<VideoSegment*>* copyOutputBuffer(std::queue<VideoSegment*>* old_outputBuffer);
     void emptyOutfileBuffer(std::queue<VideoSegment*>* outputBuffer);
     void writeOutputBuffer(std::queue<VideoSegment*>* outputBuffer, VideoSegment* current_segment);
+    int64_t ptsCheck(AVPacket* last_packet_ptr, AVPacket* packet);
     void writeOutLoop();
 
     template<typename T>

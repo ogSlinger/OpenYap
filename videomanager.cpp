@@ -491,64 +491,120 @@ void VideoManager::writeOutputBuffer(std::queue<VideoSegment*>* outputBuffer, Vi
 	}
 }
 
+int64_t VideoManager::ptsCheck(AVPacket* last_pkt_ptr, AVPacket* packet) {
+	int64_t discrepency = 0;
+	
+	if ((packet) && (last_pkt_ptr != nullptr)) {
+		if ((packet->dts >= 0) &&
+			(((packet->pts - last_pkt_ptr->pts) > ((last_pkt_ptr->pts + last_pkt_ptr->duration) * 1.5))) ||
+			(((packet->dts - last_pkt_ptr->dts) > ((last_pkt_ptr->pts + last_pkt_ptr->duration) * 1.5)))) {
+			
+			/*std::cout << "Last packet - PTS: " << last_pkt_ptr->pts
+				<< ", DTS: " << last_pkt_ptr->dts
+				<< ", Duration: " << last_pkt_ptr->duration << std::endl;
+			std::cout << "Current packet - PTS: " << packet->pts
+				<< ", DTS: " << packet->dts
+				<< ", Duration: " << packet->duration << std::endl;
+			std::cout << "PTS gap: " << (packet->pts - last_pkt_ptr->pts)
+				<< ", DTS gap: " << (packet->dts - last_pkt_ptr->dts) << std::endl;*/
+			discrepency = packet->pts;
+			if (packet->stream_index == this->video_stream_idx) {
+				packet->pts = (last_pkt_ptr->pts + last_pkt_ptr->duration);
+				packet->dts = (last_pkt_ptr->dts + last_pkt_ptr->duration);
+				discrepency -= packet->pts;
+			}
+			else {
+				packet->pts = (last_pkt_ptr->pts + last_pkt_ptr->duration);
+				packet->dts = (last_pkt_ptr->dts + last_pkt_ptr->duration);
+				discrepency -= packet->pts;
+			}
+
+			/*std::cout << "After Calculation" << std::endl;
+			std::cout << "Last packet - PTS: " << last_pkt_ptr->pts
+				<< ", DTS: " << last_pkt_ptr->dts
+				<< ", Duration: " << last_pkt_ptr->duration << std::endl;
+			std::cout << "Current packet - PTS: " << packet->pts
+				<< ", DTS: " << packet->dts
+				<< ", Duration: " << packet->duration << std::endl;
+			std::cout << "PTS gap: " << (packet->pts - last_pkt_ptr->pts)
+				<< ", DTS gap: " << (packet->dts - last_pkt_ptr->dts) << std::endl;*/
+
+			return discrepency;
+		}
+	}
+	return 0;
+}
+
 void VideoManager::writeOutLoop() {
 	VideoSegment* current_segment = nullptr;
 	std::queue<VideoSegment*> outputBuffer;
-	bool push_clear_buffer = false;
-	int audio_frame_index = 0;
-	int bytes_per_sample = av_get_bytes_per_sample(this->audio_decoder_ctx->sample_fmt);
-	int64_t packet_duration = 0;
-	int sample_count = 0;
-	double num_audio_packets = 0;
-	double running_db_total = 0;
+	int64_t running_discrepency = 0;
 	this->calculateLinearScaleThreshold();
 	bool first_audio_is_ref = false;
+	bool is_video = false;
+	int64_t pts_mutated = 0;
+	
 	AVPacket* packet = av_packet_alloc();
+	AVPacket* last_video_pkt_ptr = nullptr;
+	AVPacket* last_audio_pkt_ptr = nullptr;
 	this->reached_end = av_read_frame(this->input_ctx, packet);
+	is_video = (packet->stream_index == this->video_stream_idx) ? true : false;
 
 	//Loop through the whole input file
 	while (this->reached_end >= 0) {
-		//std::cout << "READING IN A: " << ((packet->stream_index == this->video_stream_idx) ? "VIDEO" : "AUDIO") << std::endl;
-		if ((packet->flags & AV_PKT_FLAG_KEY) && (packet->stream_index == 0)) {
-
+		if ((packet->flags & AV_PKT_FLAG_KEY) && (is_video)) {
 			if (current_segment != nullptr && !current_segment->queue.empty()) {
 				this->writeOutputBuffer(&outputBuffer, current_segment);
 			}
 			// Reset and push recent packet
 			VideoSegment* new_segment = new VideoSegment();
-
-			AVPacket* new_packet = av_packet_alloc();
-			av_packet_ref(new_packet, packet);
-			new_segment->queue.push(new_packet);
+			new_segment->queue.push(packet);
 			current_segment = new_segment;
 			first_audio_is_ref = false;
 		}
 		else {
-			if (packet->stream_index == this->audio_stream_idx && !(packet->flags & AV_PKT_FLAG_KEY) && !first_audio_is_ref) {
+			// May not need, but in future uncomment if audio keyframes are not first audio packet in queue
+			/*if (packet->stream_index == this->audio_stream_idx && !(packet->flags & AV_PKT_FLAG_KEY) && !first_audio_is_ref) {
 				std::cout << "First audio packet was not keyframed first" << std::endl;
 				first_audio_is_ref = true;
 				this->reached_end = av_read_frame(this->input_ctx, packet);
 				continue;
-			}
-			AVPacket* new_packet = av_packet_alloc();
-			av_packet_ref(new_packet, packet);
+			}*/
 			if (current_segment == nullptr) {
 				current_segment = new VideoSegment();
 			}
-			current_segment->queue.push(new_packet);
+			current_segment->queue.push(packet);
 		}
 
 		// if packet is audio
-		if (packet->stream_index == this->audio_stream_idx) {
+		if (!is_video) {
 			if (packet->flags & AV_PKT_FLAG_KEY) {
 				this->calculateFrameAudio(current_segment, packet);
 			}
 			this->buffer_running_duration += packet->duration;
+			last_audio_pkt_ptr = packet;
 		}
-
 
 		packet = av_packet_alloc();
 		this->reached_end = av_read_frame(this->input_ctx, packet);
+		is_video = (packet->stream_index == this->video_stream_idx) ? true : false;
+
+		if (is_video) {
+			if (packet->flags & AV_PKT_FLAG_KEY) {
+				running_discrepency = 0;
+				running_discrepency = this->ptsCheck(last_video_pkt_ptr, packet);
+				last_video_pkt_ptr = packet;
+			}
+			else {
+				if (running_discrepency != 0) {
+					packet->pts -= running_discrepency;
+				}
+			}
+		}
+		else {
+			this->ptsCheck(last_audio_pkt_ptr, packet);
+		}
+
 		// End of file logic
 		if (this->reached_end == AVERROR_EOF) {
 			av_packet_free(&packet);
