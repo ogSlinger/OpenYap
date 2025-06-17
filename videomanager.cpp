@@ -14,12 +14,14 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 	this->output_ctx = nullptr;
 	this->audio_decoder_ctx = nullptr;
 	this->out_pkt_ptr = nullptr;
+	this->last_video_pkt_ptr = nullptr;
+	this->last_audio_pkt_ptr = nullptr;
 
 	this->packets_per_sec = -1;
-	this->dead_space_buffer = 1.5f;
+	this->dead_space_buffer = 0.5f;
 	this->dead_space_buffer_pts = 0;
 	this->buffer_running_duration = 0;
-	this->volume_threshold_db = -20.0f;
+	this->volume_threshold_db = -18.0f;
 
 	this->current_segment.keep = false;
 	this->writeOutBufferState = 0;
@@ -239,6 +241,7 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 	int channels = this->audio_decoder_ctx->ch_layout.nb_channels;
 	int sample_count = 0;
 	int num_increment = 0;
+	int divisor = 32;
 	bool is_planar = false;
 	avcodec_send_packet(this->audio_decoder_ctx, packet);
 	AVFrame* frame = av_frame_alloc();
@@ -253,7 +256,7 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 		while (avcodec_receive_frame(this->audio_decoder_ctx, frame) >= 0) {
 			int16_t* samples = (int16_t*)frame->data[0];
 			sample_count = (is_planar) ? frame->nb_samples : (frame->nb_samples * channels);
-			num_increment = (sample_count / 8);
+			num_increment = (sample_count / divisor);
 			current_segment->keep |= processAudioSamples(frame, samples, &channels,
 				&num_increment, peak_threshold_count, &this->linear_volume_threshold, &sample_count);
 			av_frame_unref(frame);
@@ -271,7 +274,7 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 		while (avcodec_receive_frame(this->audio_decoder_ctx, frame) >= 0) {
 			float* samples = (float*)frame->data[0];
 			sample_count = (is_planar) ? frame->nb_samples : (frame->nb_samples * channels);
-			num_increment = (sample_count / 8);
+			num_increment = (sample_count / divisor);
 			current_segment->keep |= processAudioSamples(frame, samples, &channels,
 				&num_increment, peak_threshold_count, &this->linear_volume_threshold, &sample_count);
 			av_frame_unref(frame);
@@ -289,7 +292,7 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 		while (avcodec_receive_frame(this->audio_decoder_ctx, frame) >= 0) {
 			int32_t* samples = (int32_t*)frame->data[0];
 			sample_count = (is_planar) ? frame->nb_samples : (frame->nb_samples * channels);
-			num_increment = (sample_count / 8);
+			num_increment = (sample_count / divisor);
 			current_segment->keep |= processAudioSamples(frame, samples, &channels,
 				&num_increment, peak_threshold_count, &this->linear_volume_threshold, &sample_count);
 			peak_threshold_count = 0;
@@ -306,7 +309,7 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 		while (avcodec_receive_frame(this->audio_decoder_ctx, frame) >= 0) {
 			uint8_t* samples = (uint8_t*)frame->data[0];
 			sample_count = (is_planar) ? frame->nb_samples : (frame->nb_samples * channels);
-			num_increment = (sample_count / 8);
+			num_increment = (sample_count / divisor);
 			current_segment->keep |= processAudioSamples(frame, samples, &channels,
 				&num_increment, peak_threshold_count, &this->linear_volume_threshold, &sample_count);
 			av_frame_unref(frame);
@@ -324,7 +327,7 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 		while (avcodec_receive_frame(this->audio_decoder_ctx, frame) >= 0) {
 			double* samples = (double*)frame->data[0];
 			sample_count = (is_planar) ? frame->nb_samples : (frame->nb_samples * channels);
-			num_increment = (sample_count / 8);
+			num_increment = (sample_count / divisor);
 			current_segment->keep |= processAudioSamples(frame, samples, &channels,
 				&num_increment, peak_threshold_count, &this->linear_volume_threshold, &sample_count);
 			av_frame_unref(frame);
@@ -339,6 +342,55 @@ void VideoManager::calculateFrameAudio(VideoSegment* current_segment, AVPacket* 
 	}
 
 	av_frame_free(&frame);
+}
+
+int64_t VideoManager::ptsCheck(AVPacket* last_pkt_ptr = nullptr, AVPacket* packet = nullptr) {
+	int64_t discrepency = 0;
+
+	if ((packet) && (last_pkt_ptr != nullptr)) {
+		if ((abs(packet->pts - last_pkt_ptr->pts) > (last_pkt_ptr->duration * 1.5)) ||
+			((abs(packet->dts - last_pkt_ptr->dts) > (last_pkt_ptr->duration * 1.5)))) {
+			if (last_pkt_ptr->dts >= 0) {
+				std::cout << "=============================================" << std::endl;
+				std::cout << "Last packet - PTS: " << last_pkt_ptr->pts
+					<< ", DTS: " << last_pkt_ptr->dts
+					<< ", Duration: " << last_pkt_ptr->duration << std::endl;
+				std::cout << "Current packet - PTS: " << packet->pts
+					<< ", DTS: " << packet->dts
+					<< ", Duration: " << packet->duration << std::endl;
+				std::cout << "PTS gap: " << (packet->pts - last_pkt_ptr->pts)
+					<< ", DTS gap: " << (packet->dts - last_pkt_ptr->dts) << std::endl;
+				std::cout << "Discrepency before: " << discrepency << std::endl;
+
+				discrepency = packet->pts;
+				if (packet->stream_index == this->video_stream_idx) {
+					packet->pts = (last_pkt_ptr->pts + last_pkt_ptr->duration);
+					packet->dts = (last_pkt_ptr->dts + last_pkt_ptr->duration);
+					discrepency -= packet->pts;
+					std::cout << "This is Video" << std::endl;
+				}
+				else {
+					packet->pts = (last_pkt_ptr->pts + last_pkt_ptr->duration);
+					packet->dts = (last_pkt_ptr->dts + last_pkt_ptr->duration);
+					discrepency -= packet->pts;
+					std::cout << "This is audio" << std::endl;
+				}
+
+				std::cout << "Discrepency after: " << discrepency << std::endl;
+				std::cout << "Last packet - PTS: " << last_pkt_ptr->pts
+					<< ", DTS: " << last_pkt_ptr->dts
+					<< ", Duration: " << last_pkt_ptr->duration << std::endl;
+				std::cout << "Current packet - PTS: " << packet->pts
+					<< ", DTS: " << packet->dts
+					<< ", Duration: " << packet->duration << std::endl;
+				std::cout << "PTS gap: " << (packet->pts - last_pkt_ptr->pts)
+					<< ", DTS gap: " << (packet->dts - last_pkt_ptr->dts) << std::endl;
+				std::cout << "=============================================" << std::endl;
+				return discrepency;
+			}
+		}
+	}
+	return 0;
 }
 
 void VideoManager::emptyOutfileBuffer(std::queue<VideoSegment*>* outputBuffer) {
@@ -410,21 +462,17 @@ void VideoManager::invokeQueueSM() {
 			this->popHalfQueue(this->outputQueue.front());
 			delete this->outputQueue.front();
 			this->outputQueue.pop();
-			this->writeOutBufferState <<= 1;
-			this->writeOutBufferState &= 0b011;
 		}
 		break;
-	case 0b01:
 	case 0b10:
 		// Write Both
 		this->writeFullQueue();
-		this->writeOutBufferState = 0;
+		this->writeOutBufferState &= 0b000;
 		break;
+	case 0b01:
 	case 0b11:
 		//Write 1
 		this->writeHalfQueue();
-		this->writeOutBufferState <<= 1;
-		this->writeOutBufferState &= 0b011;
 		break;
 	}
 }
@@ -436,7 +484,7 @@ void VideoManager::writeToOutputQueue(std::queue<VideoSegment*>* outputBuffer) {
 		this->writeOutBufferState = (outputBuffer->front()->keep) ? (this->writeOutBufferState | 0b1) : (this->writeOutBufferState | 0b0);
 		this->outputQueue.push(outputBuffer);
 		if (outputQueue.size() == 1) {
-			this->writeOutBufferState <<= 0b1;
+			this->writeOutBufferState <<= 1;
 			this->writeOutBufferState &= 0b011;
 		}
 		else {
@@ -480,79 +528,40 @@ void VideoManager::writeOutputBuffer(std::queue<VideoSegment*>* outputBuffer, Vi
 	}
 }
 
-int64_t VideoManager::ptsCheck(AVPacket* last_pkt_ptr = nullptr, AVPacket* packet = nullptr) {
-	int64_t discrepency = 0;
-	
-	if ((packet) && (last_pkt_ptr != nullptr)) {
-		if (last_pkt_ptr->dts >= 0) {
-			if 	((abs(packet->pts - last_pkt_ptr->pts) > (last_pkt_ptr->duration * 1.5)) ||
-				((abs(packet->dts - last_pkt_ptr->dts) > (last_pkt_ptr->duration * 1.5)))) {
-				std::cout << "=============================================" << std::endl;
-				std::cout << "Last packet - PTS: " << last_pkt_ptr->pts
-					<< ", DTS: " << last_pkt_ptr->dts
-					<< ", Duration: " << last_pkt_ptr->duration << std::endl;
-				std::cout << "Current packet - PTS: " << packet->pts
-					<< ", DTS: " << packet->dts
-					<< ", Duration: " << packet->duration << std::endl;
-				std::cout << "PTS gap: " << (packet->pts - last_pkt_ptr->pts)
-					<< ", DTS gap: " << (packet->dts - last_pkt_ptr->dts) << std::endl;
-				std::cout << "Discrepency before: " << discrepency << std::endl;
-
-				discrepency = packet->pts;
-				if (packet->stream_index == this->video_stream_idx) {
-					packet->pts = (last_pkt_ptr->pts + last_pkt_ptr->duration);
-					packet->dts = (last_pkt_ptr->dts + last_pkt_ptr->duration);
-					discrepency -= packet->pts;
-					std::cout << "This is Video" << std::endl;
-				}
-				else {
-					packet->pts = (last_pkt_ptr->pts + last_pkt_ptr->duration);
-					packet->dts = (last_pkt_ptr->dts + last_pkt_ptr->duration);
-					discrepency -= packet->pts;
-					std::cout << "This is audio" << std::endl;
-				}
-
-				std::cout << "Discrepency after: " << discrepency << std::endl;
-				std::cout << "Last packet - PTS: " << last_pkt_ptr->pts
-					<< ", DTS: " << last_pkt_ptr->dts
-					<< ", Duration: " << last_pkt_ptr->duration << std::endl;
-				std::cout << "Current packet - PTS: " << packet->pts
-					<< ", DTS: " << packet->dts
-					<< ", Duration: " << packet->duration << std::endl;
-				std::cout << "PTS gap: " << (packet->pts - last_pkt_ptr->pts)
-					<< ", DTS gap: " << (packet->dts - last_pkt_ptr->dts) << std::endl;
-				std::cout << "=============================================" << std::endl;
-				return discrepency;
-			}
-		}
-	}
-	return 0;
-}
-
 void VideoManager::writeOutLoop() {
 	VideoSegment* current_segment = nullptr;
 	std::queue<VideoSegment*> outputBuffer;
-	int64_t video_running_discrepency = 0;
-	int64_t audio_running_discrepency = 0;
-	this->calculateLinearScaleThreshold();
 	bool first_audio_is_ref = false;
 	bool is_video = false;
+
+	this->calculateLinearScaleThreshold();
 	
-	AVPacket* packet = av_packet_alloc();
-	AVPacket* last_video_pkt_ptr = av_packet_alloc();
-	AVPacket* last_audio_pkt_ptr = av_packet_alloc();
+	this->last_video_pkt_ptr = av_packet_alloc();
+	this->last_audio_pkt_ptr = av_packet_alloc();
 	if (!last_video_pkt_ptr || !last_audio_pkt_ptr) {
 		throw std::runtime_error("Packet ptr allocation error.");
 	}
-
-	last_video_pkt_ptr->dts = -1000;
-	last_audio_pkt_ptr->dts = -1000;
-
+	this->last_video_pkt_ptr->dts = -1000;
+	this->last_audio_pkt_ptr->dts = -1000;
+	
+	AVPacket* packet = av_packet_alloc();
 	this->reached_end = av_read_frame(this->input_ctx, packet);
+
 	// Valid data check
-	while (((!packet) ||  
-		((packet->pts == AV_NOPTS_VALUE || packet->dts == AV_NOPTS_VALUE)) && (this->reached_end != AVERROR_EOF))) {
+	while ((!packet) ||  
+		((packet->pts == AV_NOPTS_VALUE || packet->dts == AV_NOPTS_VALUE))) {
 		std::cout << "INVALID PACKET" << std::endl;
+		if (this->reached_end == AVERROR_EOF) {
+			if (this->reached_end == AVERROR_EOF) {
+				av_packet_free(&packet);
+				if (current_segment != nullptr) {
+					writeOutputBuffer(&outputBuffer, current_segment);
+				}
+			}
+			av_packet_free(&this->last_audio_pkt_ptr);
+			av_packet_free(&this->last_video_pkt_ptr);
+			return;
+		}
 		av_packet_free(&packet);
 		packet = av_packet_alloc();
 		this->reached_end = av_read_frame(this->input_ctx, packet);
@@ -596,58 +605,27 @@ void VideoManager::writeOutLoop() {
 		this->reached_end = av_read_frame(this->input_ctx, packet);
 		
 		// Valid data check
-		while (((!packet) ||
-			(packet->pts == AV_NOPTS_VALUE) || (packet->dts == AV_NOPTS_VALUE) && (this->reached_end != AVERROR_EOF))) {
+		while ((!packet) ||
+			(packet->pts == AV_NOPTS_VALUE) || (packet->dts == AV_NOPTS_VALUE)) {
 			std::cout << "INVALID PACKET" << std::endl;
+			if (this->reached_end == AVERROR_EOF) {
+				if (this->reached_end == AVERROR_EOF) {
+					av_packet_free(&packet);
+					if (current_segment != nullptr) {
+						writeOutputBuffer(&outputBuffer, current_segment);
+					}
+				}
+				av_packet_free(&this->last_audio_pkt_ptr);
+				av_packet_free(&this->last_video_pkt_ptr);
+				return;
+			}
 			av_packet_free(&packet);
 			packet = av_packet_alloc();
 			this->reached_end = av_read_frame(this->input_ctx, packet);
 		}
+		is_video = (packet->stream_index == this->video_stream_idx) ? true : false;
 
-		// End of file logic
-		if (this->reached_end == AVERROR_EOF) {
-			av_packet_free(&packet);
-			if (current_segment != nullptr) {
-				writeOutputBuffer(&outputBuffer, current_segment);
-			}
-		}
-		else {
-			is_video = (packet->stream_index == this->video_stream_idx) ? true : false;
-
-			//PTS Check
-			if (is_video) {
-				if (packet->flags & AV_PKT_FLAG_KEY) {
-					//std::cout << "Keyframed Video" << std::endl;
-					video_running_discrepency = 0;
-					video_running_discrepency = this->ptsCheck(last_video_pkt_ptr, packet);
-					last_video_pkt_ptr->pts = packet->pts;
-					last_video_pkt_ptr->dts = packet->dts;
-					last_video_pkt_ptr->duration = packet->duration;
-				}
-				else {
-					packet->pts += video_running_discrepency;
-					packet->dts += video_running_discrepency;
-				}
-			}
-
-			else {
-				if (packet->flags & AV_PKT_FLAG_KEY) {
-					//std::cout << "Audio" << std::endl;
-					audio_running_discrepency = 0;
-					audio_running_discrepency = this->ptsCheck(last_audio_pkt_ptr, packet);
-					last_audio_pkt_ptr->pts = packet->pts;
-					last_audio_pkt_ptr->dts = packet->dts;
-					last_audio_pkt_ptr->duration = packet->duration;
-				}
-				else {
-					packet->pts += audio_running_discrepency;
-					packet->dts += audio_running_discrepency;
-				}
-			}
-		}
 	}
-	av_packet_free(&last_audio_pkt_ptr);
-	av_packet_free(&last_video_pkt_ptr);
 }
 
 void VideoManager::buildVideo() {

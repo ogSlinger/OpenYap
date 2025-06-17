@@ -27,6 +27,10 @@ private:
     int audio_stream_idx;
     int video_stream_idx;
     float linear_volume_threshold;
+    AVPacket* last_video_pkt_ptr;
+    AVPacket* last_audio_pkt_ptr;
+    int64_t video_running_discrepency;
+    int64_t audio_running_discrepency;
 
     AVPacket* out_pkt_ptr;
     double packets_per_sec;
@@ -54,6 +58,7 @@ private:
     int64_t audio_pts_offset;
     int64_t video_dts_offset;
     int64_t audio_dts_offset;
+  
     
 public:
     VideoManager(const char* input_file, const char* output_file);
