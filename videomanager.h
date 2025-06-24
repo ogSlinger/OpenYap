@@ -93,6 +93,7 @@ private:
     void calculateFrameAudio(VideoSegment* current_segment, AVPacket* packet);
     void writeFullQueue();
     void writeHalfQueue();
+    void purgeBuffer(std::queue<VideoSegment*>* outputBuffer);
     void popHalfQueue(std::queue<VideoSegment*>* outputBuffer);
     void invokeQueueSM();
     void writeToOutputQueue(std::queue<VideoSegment*>* outputBuffer);
@@ -101,7 +102,7 @@ private:
     void writeOutputBuffer(std::queue<VideoSegment*>* outputBuffer, VideoSegment* current_segment);
     int64_t get_expected_video_duration();
     int64_t get_expected_audio_duration();
-    void timingCheck(bool is_video, AVPacket* packet);
+    void timingCheck(bool is_video, AVPacket* packet, std::queue<VideoSegment*>& outputBuffer);
     void writeOutLoop();
 
     template<typename T>

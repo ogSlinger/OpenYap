@@ -359,25 +359,6 @@ void VideoManager::emptyOutfileBuffer(std::queue<VideoSegment*>* outputBuffer) {
 			if (is_video) {
 				this->out_pkt_ptr->pts -= this->video_pts_offset;
 				this->out_pkt_ptr->dts -= this->video_dts_offset;
-				if (this->out_pkt_ptr->dts > 0) {
-					while (this->out_pkt_ptr->pts < this->last_read_video_pkt->pts) {
-						this->out_pkt_ptr->pts += this->out_pkt_ptr->duration;
-						//this->running_video_pts_discrepency -= packet->duration;
-						this->video_pts_offset -= this->out_pkt_ptr->duration;
-					}
-					while (this->out_pkt_ptr->pts < this->out_pkt_ptr->dts) {
-						this->out_pkt_ptr->pts += this->out_pkt_ptr->duration;
-						//this->running_video_pts_discrepency -= packet->duration;
-						this->video_pts_offset -= this->out_pkt_ptr->duration;
-					}
-					while (this->out_pkt_ptr->dts < this->last_read_video_pkt->dts) {
-						this->out_pkt_ptr->dts += this->out_pkt_ptr->duration;
-						//this->running_video_dts_discrepency -= packet->duration;
-						this->video_dts_offset -= this->out_pkt_ptr->duration;
-					}
-				}
-				this->last_read_video_pkt->pts = this->out_pkt_ptr->pts;
-				this->last_read_video_pkt->dts = this->out_pkt_ptr->dts;
 			}
 			else {
 				this->out_pkt_ptr->pts -= this->audio_pts_offset;
@@ -407,6 +388,17 @@ void VideoManager::writeHalfQueue() {
 	}
 }
 
+void VideoManager::purgeBuffer(std::queue<VideoSegment*>* outputBuffer) {
+	while (!outputBuffer->empty()) {
+		while (!outputBuffer->front()->queue.empty()) {
+			av_packet_free(&outputBuffer->front()->queue.front());
+			outputBuffer->front()->queue.pop();
+		}
+		delete outputBuffer->front();
+		outputBuffer->pop();
+	}
+}
+
 void VideoManager::popHalfQueue(std::queue<VideoSegment*>* outputBuffer) {
 	while (!outputBuffer->empty()) {
 		while (!outputBuffer->front()->queue.empty()) {
@@ -424,12 +416,11 @@ void VideoManager::popHalfQueue(std::queue<VideoSegment*>* outputBuffer) {
 		delete outputBuffer->front();
 		outputBuffer->pop();
 	}
-
 }
 
 void VideoManager::invokeQueueSM() {
 	//State Machine Writing Output
-	this->writeOutBufferState = 0b01;
+	//this->writeOutBufferState = 0b01;
 	switch (this->writeOutBufferState & 0b00000011) {
 	case 0b00:
 		// Pop one
@@ -554,19 +545,44 @@ int64_t VideoManager::get_expected_audio_duration() {
 	return av_rescale_q(samples_per_frame, { 1, codecpar->sample_rate }, audio_stream->time_base);
 }
 
-void VideoManager::timingCheck(bool is_video, AVPacket* packet) {
+void VideoManager::timingCheck(bool is_video, AVPacket* packet, std::queue<VideoSegment*>& outputBuffer) {
 	if (is_video) {
-		//packet->pts -= this->running_video_pts_discrepency;
-		//packet->dts -= this->running_video_dts_discrepency;
+		packet->pts -= this->running_video_pts_discrepency;
+		packet->dts -= this->running_video_dts_discrepency;
 		
 		if (this->dead_video_pkt_ptr->dts > 0) {
 			if (packet->flags & AV_PKT_FLAG_KEY) {
+				this->running_video_pts_discrepency = 0;
+				this->running_video_dts_discrepency = 0;
+
+				if ((packet->pts - (packet->duration * 2)) > this->dead_video_pkt_ptr->pts) {
+					//this->purgeBuffer(&outputBuffer);
+					this->buffer_running_duration = 0;
+					std::queue<VideoManager::VideoSegment*>* newBuffer = this->copyOutputBuffer(&outputBuffer);
+					this->writeToOutputQueue(newBuffer);
+					this->writeOutBufferState = 0b01;
+					this->invokeQueueSM();
+					this->writeOutBufferState = 0b01;
+					this->invokeQueueSM();
+				}
 				while ((packet->pts - (packet->duration * 2)) > this->dead_video_pkt_ptr->pts) {
 					packet->pts -= this->expected_video_duration;
 					packet->dts -= this->expected_video_duration;
 					packet->duration += this->expected_video_duration;
+					this->running_video_pts_discrepency += this->expected_video_duration;
+					this->running_video_dts_discrepency += this->expected_video_duration;
 				}
-				
+				while (packet->dts < this->last_read_video_pkt->dts) {
+					packet->dts += this->expected_video_duration;
+					this->running_video_dts_discrepency -= this->expected_video_duration;
+				}
+				while (packet->pts < packet->dts) {
+					packet->pts += this->expected_video_duration;
+					this->running_video_pts_discrepency -= this->expected_video_duration;
+				}
+
+				this->last_read_video_pkt->pts = packet->pts;
+				this->last_read_video_pkt->dts = packet->dts;
 				this->dead_video_pkt_ptr->pts = packet->pts + packet->duration; // HERE
 				this->dead_video_pkt_ptr->dts = packet->dts + packet->duration; // HERE
 			}
@@ -624,7 +640,7 @@ void VideoManager::writeOutLoop() {
 		this->reached_end = av_read_frame(this->input_ctx, packet);
 	}
 	is_video = (packet->stream_index == this->video_stream_idx) ? true : false;
-	this->timingCheck(is_video, packet);
+	this->timingCheck(is_video, packet, outputBuffer);
 
 	//Loop through the whole input file
 	while (this->reached_end >= 0) {
@@ -682,7 +698,7 @@ void VideoManager::writeOutLoop() {
 			this->reached_end = av_read_frame(this->input_ctx, packet);
 		}
 		is_video = (packet->stream_index == this->video_stream_idx) ? true : false;
-		this->timingCheck(is_video, packet);
+		this->timingCheck(is_video, packet, outputBuffer);
 	}
 }
 
