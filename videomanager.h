@@ -29,8 +29,6 @@ private:
     float linear_volume_threshold;
     AVPacket* last_video_pkt_ptr;
     AVPacket* last_audio_pkt_ptr;
-    int64_t video_running_discrepency;
-    int64_t audio_running_discrepency;
 
     AVPacket* out_pkt_ptr;
     double packets_per_sec;
@@ -58,6 +56,9 @@ private:
     int64_t audio_pts_offset;
     int64_t video_dts_offset;
     int64_t audio_dts_offset;
+    int64_t running_bframe_pts;
+    int64_t running_video_pts_discrepency;
+    int64_t running_video_dts_discrepency;
   
     
 public:
@@ -92,7 +93,11 @@ private:
     std::queue<VideoSegment*>* copyOutputBuffer(std::queue<VideoSegment*>* old_outputBuffer);
     void emptyOutfileBuffer(std::queue<VideoSegment*>* outputBuffer);
     void writeOutputBuffer(std::queue<VideoSegment*>* outputBuffer, VideoSegment* current_segment);
+    int64_t get_expected_video_duration();
+    int64_t get_expected_audio_duration();
     int64_t ptsCheck(AVPacket* last_packet_ptr, AVPacket* packet);
+    void timingCheck(bool is_video, AVPacket* packet, int64_t expected_video_duration);
+    void packetTimingCheck(AVPacket* packet, bool is_video);
     void writeOutLoop();
 
     template<typename T>
