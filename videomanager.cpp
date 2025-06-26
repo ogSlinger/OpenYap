@@ -507,7 +507,20 @@ int64_t VideoManager::get_expected_video_duration() {
 	if (frame_rate.num == 0 || frame_rate.den == 0) {
 		frame_rate = { 60, 1 };
 	}
-	return av_rescale_q(1, av_inv_q(frame_rate), video_stream->time_base);
+	int64_t actual_duration = av_rescale_q(1, av_inv_q(frame_rate), video_stream->time_base);
+
+	int64_t duration_60fps = 1500;  // 60 FPS
+	int64_t duration_30fps = 3000;  // 30 FPS
+
+	int64_t diff_60fps = abs(actual_duration - duration_60fps);
+	int64_t diff_30fps = abs(actual_duration - duration_30fps);
+
+	if (diff_60fps <= diff_30fps) {
+		return duration_60fps;
+	}
+	else {
+		return duration_30fps;
+	}
 }
 
 int64_t VideoManager::get_expected_audio_duration() {
@@ -587,12 +600,12 @@ void VideoManager::timingCheck(bool is_video, AVPacket* packet, std::queue<Video
 
 				this->last_read_video_pkt->pts = packet->pts;
 				this->last_read_video_pkt->dts = packet->dts;
-				this->dead_video_pkt_ptr->pts = packet->pts + packet->duration; // HERE
-				this->dead_video_pkt_ptr->dts = packet->dts + packet->duration; // HERE
+				this->dead_video_pkt_ptr->pts = packet->pts + packet->duration;
+				this->dead_video_pkt_ptr->dts = packet->dts + packet->duration;
 			}
 			else {
-				this->dead_video_pkt_ptr->pts += packet->duration; // HERE
-				this->dead_video_pkt_ptr->dts += packet->duration; // HERE
+				this->dead_video_pkt_ptr->pts += packet->duration;
+				this->dead_video_pkt_ptr->dts += packet->duration;
 			}
 		}
 		else {
@@ -607,7 +620,7 @@ void VideoManager::writeOutLoop() {
 	std::queue<VideoSegment*> outputBuffer;
 	bool first_audio_is_ref = false;
 	bool is_video = false;
-	this->expected_video_duration = 1500;
+	this->expected_video_duration = this->get_expected_video_duration();
 	int64_t expected_audio_duration = this->get_expected_audio_duration();
 	this->calculateLinearScaleThreshold();
 	
