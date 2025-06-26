@@ -1,3 +1,11 @@
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/imgutils.h>
+#include <libavutil/avutil.h>
+#include <libswscale/swscale.h>
+}
+
 //© 2025[Derek Spaulding].All rights reserved.
 #pragma once
 #include <string>
@@ -8,14 +16,6 @@
 #include <ranges>
 #include <queue>
 #include <cmath>
-
-extern "C" {
-#include <libavcodec/avcodec.h>
-#include <libavformat/avformat.h>
-#include <libavutil/imgutils.h>
-#include <libavutil/avutil.h>
-#include <libswscale/swscale.h>
-}
 
 class VideoManager {
 private:
@@ -32,7 +32,6 @@ private:
     AVPacket* dead_audio_pkt_ptr;
 
     AVPacket* out_pkt_ptr;
-    double packets_per_sec;
     unsigned char writeOutBufferState;
     int reached_end;
     
@@ -46,9 +45,8 @@ private:
         VideoSegment(int64_t start_pts, int64_t start_dts, int64_t next_pts, int64_t next_dts, std::queue<AVPacket*>* queue_ptr, bool keep_flag, bool push_flag, int64_t audio_duration)
             : queue(), keep(keep_flag), ready_to_push(push_flag) {}
     };
-    VideoSegment current_segment;
+    
     std::queue<std::queue<VideoSegment*>*> outputQueue;
-
     float volume_threshold_db;
     float dead_space_buffer;
     int64_t dead_space_buffer_pts;
@@ -57,7 +55,6 @@ private:
     int64_t audio_pts_offset;
     int64_t video_dts_offset;
     int64_t audio_dts_offset;
-    int64_t running_bframe_pts;
     int64_t running_video_pts_discrepency;
     int64_t running_video_dts_discrepency;
     int64_t expected_video_duration;
@@ -68,7 +65,7 @@ private:
     int64_t current_audio_dts;
     
 public:
-    VideoManager(const char* input_file, const char* output_file);
+    VideoManager(const char* input_file, const char* output_file, float dsb, float vtdb);
     ~VideoManager();
     void buildVideo();
 

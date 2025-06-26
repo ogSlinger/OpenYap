@@ -3,8 +3,7 @@
 
 #define MAX_STREAMS 10
 
-
-VideoManager::VideoManager(const char* input_file, const char* output_file) {
+VideoManager::VideoManager(const char* input_file, const char* output_file, float dsb, float vtdb) {
 	this->input_file = input_file;
 	this->output_file = output_file;
 	this->audio_stream_idx = -1;
@@ -18,13 +17,11 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 	this->dead_audio_pkt_ptr = nullptr;
 	this->last_read_video_pkt = nullptr;
 
-	this->packets_per_sec = -1;
-	this->dead_space_buffer = 0.5f;
+	this->dead_space_buffer = dsb;
 	this->dead_space_buffer_pts = 0;
 	this->buffer_running_duration = 0;
-	this->volume_threshold_db = -18.0f;
+	this->volume_threshold_db = vtdb;
 
-	this->current_segment.keep = false;
 	this->writeOutBufferState = 0;
 	this->reached_end = 0;
 	this->linear_volume_threshold = 0.0f;
@@ -33,15 +30,18 @@ VideoManager::VideoManager(const char* input_file, const char* output_file) {
 	this->audio_pts_offset = 0;
 	this->video_dts_offset = 0;
 	this->audio_dts_offset = 0;
-	this->running_bframe_pts = 0;
-	this->running_bframe_pts = 0;
 	this->running_video_pts_discrepency = 0;
 	this->running_video_dts_discrepency = 0;
 }
 
 
 VideoManager::~VideoManager() {
-	avformat_close_input(&this->input_ctx);
+	if (input_ctx) { avformat_close_input(&this->input_ctx); }
+	if (dead_video_pkt_ptr) { av_packet_free(&this->dead_video_pkt_ptr); }
+	if (dead_audio_pkt_ptr) { av_packet_free(&this->dead_audio_pkt_ptr); }
+	if (last_read_video_pkt) { av_packet_free(&this->last_read_video_pkt); }
+	if (out_pkt_ptr) { av_packet_free(&this->out_pkt_ptr); }
+	if (output_ctx) { avformat_free_context(output_ctx); }
 }
 
 
@@ -173,6 +173,11 @@ void VideoManager::writeFileHeader() {
 void VideoManager::writeFileTrailer() {
 	if (av_write_trailer(this->output_ctx) < 0) {
 		throw std::runtime_error("Error writing trailer");
+	}
+	avio_closep(&output_ctx->pb);
+	if (output_ctx) {
+		avformat_free_context(output_ctx);
+		output_ctx = NULL;
 	}
 }
 
@@ -364,7 +369,6 @@ void VideoManager::emptyOutfileBuffer(std::queue<VideoSegment*>* outputBuffer) {
 				this->out_pkt_ptr->pts -= this->audio_pts_offset;
 				this->out_pkt_ptr->dts -= this->audio_dts_offset;
 			}
-			//std::cout << "Writing " << ((is_video) ? "Video" :  "Audio") << ((this->out_pkt_ptr->flags & AV_PKT_FLAG_KEY) ? " KEYFRAME " : " ") << std::endl;
 			av_interleaved_write_frame(this->output_ctx, out_pkt_ptr);
 			outputBuffer->front()->queue.pop();
 		}
@@ -623,7 +627,6 @@ void VideoManager::writeOutLoop() {
 	// Valid data check
 	while ((!packet) ||  
 		((packet->pts == AV_NOPTS_VALUE || packet->dts == AV_NOPTS_VALUE))) {
-		std::cout << "INVALID PACKET" << std::endl;
 		if (this->reached_end == AVERROR_EOF) {
 			if (this->reached_end == AVERROR_EOF) {
 				av_packet_free(&packet);
@@ -655,13 +658,6 @@ void VideoManager::writeOutLoop() {
 			first_audio_is_ref = false;
 		}
 		else {
-			// May not need, but in future uncomment if audio keyframes are not first audio packet in queue
-			if ((packet->stream_index == this->audio_stream_idx) && (!(packet->flags & AV_PKT_FLAG_KEY)) && (!first_audio_is_ref)) {
-				std::cout << "First audio packet was not keyframed first" << std::endl;
-				first_audio_is_ref = true;
-				this->reached_end = av_read_frame(this->input_ctx, packet);
-				continue;
-			}
 			if (current_segment == nullptr) {
 				current_segment = new VideoSegment();
 			}
@@ -681,7 +677,6 @@ void VideoManager::writeOutLoop() {
 		// Valid data check
 		while ((!packet) ||
 			(packet->pts == AV_NOPTS_VALUE) || (packet->dts == AV_NOPTS_VALUE)) {
-			std::cout << "INVALID PACKET" << std::endl;
 			if (this->reached_end == AVERROR_EOF) {
 				if (this->reached_end == AVERROR_EOF) {
 					av_packet_free(&packet);
@@ -703,7 +698,6 @@ void VideoManager::writeOutLoop() {
 }
 
 void VideoManager::buildVideo() {
-	// av_log_set_level(AV_LOG_DEBUG);
 	// Prelude initialization
 	try {
 		avformat_close_input(&this->input_ctx);

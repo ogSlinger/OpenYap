@@ -1,23 +1,60 @@
-#include <iostream>  // Include standard C++ input-output library for console operations
-#include "videomanager.h"
-extern "C" {  // Use C linkage for FFmpeg libraries since they're written in C
-#include <libavcodec/avcodec.h>  // Include FFmpeg codec library for encoding/decoding
-#include <libavformat/avformat.h>  // Include FFmpeg format library for container formats (MP4, MKV, etc.)
-#include <libavutil/imgutils.h>  // Include FFmpeg utility library for image-related functions
-#include <libavutil/avutil.h>  // Include FFmpeg utility library for common functions
-#include <libswscale/swscale.h>  // Include FFmpeg library for scaling and pixel format conversion
-}
+#include <iostream> 
 #include <chrono>
+#include "videomanager.h"
+
+extern "C" {  
+#include <libavcodec/avcodec.h> 
+#include <libavformat/avformat.h> 
+#include <libavutil/imgutils.h> 
+#include <libavutil/avutil.h>  
+#include <libswscale/swscale.h> 
+}
 
 int main(int argc, char* argv[]) {
+    std::string inputName = "input.mp4";
+    std::string outputName = "output.mp4";
+    float db_volume_threshold = -18.0f;
+    float dead_space_buffer = 0.5f;
+
+    if (argc == 5) {
+        inputName = argv[1];
+        outputName = argv[2];
+
+        try {
+            db_volume_threshold = std::stof(argv[3]);
+        }
+        catch (const std::invalid_argument& e) {
+            std::cout << "Error: Invalid float format" << std::endl;
+            return 1;
+        }
+        catch (const std::out_of_range& e) {
+            std::cout << "Error: Float value out of range" << std::endl;
+            return 1;
+        }
+        db_volume_threshold = (db_volume_threshold >= 0) ? -db_volume_threshold : db_volume_threshold;
+
+        try {
+            dead_space_buffer = std::stof(argv[4]);
+        }
+        catch (const std::invalid_argument& e) {
+            std::cout << "Error: Invalid float format" << std::endl;
+            return 1;
+        }
+        catch (const std::out_of_range& e) {
+            std::cout << "Error: Float value out of range" << std::endl;
+            return 1;
+        }
+        dead_space_buffer = (dead_space_buffer <= 0) ? 0.5f : dead_space_buffer;
+    }
+
     auto start = std::chrono::high_resolution_clock::now();
 
-    VideoManager vm("input.mp4", "output.mp4");
+    VideoManager vm(inputName.c_str(), outputName.c_str(), db_volume_threshold, dead_space_buffer);
     vm.buildVideo();
 
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     std::cout << "Execution time: " << duration.count() << " microseconds" << std::endl;
     std::cout << "Execution time: " << duration.count() / 1000.0 << " milliseconds" << std::endl;
-    return 0;  // Return success code
+    return 0;
 }
