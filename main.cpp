@@ -49,7 +49,11 @@ int main(int argc, char* argv[]) {
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    VideoManager vm(inputName.c_str(), outputName.c_str(), db_volume_threshold, dead_space_buffer);
+    VideoManager vm(inputName.c_str(), 
+        outputName.c_str(), 
+        db_volume_threshold, 
+        dead_space_buffer);
+
     vm.buildVideo();
 
     auto end = std::chrono::high_resolution_clock::now();
@@ -58,3 +62,21 @@ int main(int argc, char* argv[]) {
     std::cout << "Execution time: " << duration.count() / 1000.0 << " milliseconds" << std::endl;
     return 0;
 }
+
+/*
+    Technologies:
+        FFMPEG
+
+    Capabilities: 
+        -Removes silence from video
+        -Handles irregular packets (dropped frames)
+        -Allows for silent buffers inbetween
+
+    Statistics:
+        ~2.5 hour long video => 1 hour
+        ~13 seconds
+
+    Restrictions:
+        Output is can only match input.
+        Packet handling ONLY
+*/

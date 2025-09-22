@@ -3,7 +3,7 @@
 
 #define MAX_STREAMS 10
 
-VideoManager::VideoManager(const char* input_file, const char* output_file, float dsb, float vtdb) {
+VideoManager::VideoManager(const char* input_file, const char* output_file, float vtdb, float dsb) {
 	this->input_file = input_file;
 	this->output_file = output_file;
 	this->audio_stream_idx = -1;
@@ -173,11 +173,6 @@ void VideoManager::writeFileHeader() {
 void VideoManager::writeFileTrailer() {
 	if (av_write_trailer(this->output_ctx) < 0) {
 		throw std::runtime_error("Error writing trailer");
-	}
-	avio_closep(&output_ctx->pb);
-	if (output_ctx) {
-		avformat_free_context(output_ctx);
-		output_ctx = NULL;
 	}
 }
 
@@ -742,7 +737,6 @@ void VideoManager::buildVideo() {
 		std::cerr << "Parse error: " << e.what() << std::endl;
 		return;
 	}
-
 }
 
 //© 2025[Derek Spaulding].All rights reserved.

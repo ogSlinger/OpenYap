@@ -65,7 +65,7 @@ private:
     int64_t current_audio_dts;
     
 public:
-    VideoManager(const char* input_file, const char* output_file, float dsb, float vtdb);
+    VideoManager(const char* input_file, const char* output_file, float vtdb, float dsb);
     ~VideoManager();
     void buildVideo();
 
