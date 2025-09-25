@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) 2025 Derek Spaulding
+ * Licensed under MIT License - see LICENSE file
+ */
+
 #include <iostream> 
 #include <chrono>
 #include "videomanager.h"
@@ -63,20 +68,7 @@ int main(int argc, char* argv[]) {
     return 0;
 }
 
-/*
-    Technologies:
-        FFMPEG
-
-    Capabilities: 
-        -Removes silence from video
-        -Handles irregular packets (dropped frames)
-        -Allows for silent buffers inbetween
-
-    Statistics:
-        ~2.5 hour long video => 1 hour
-        ~13 seconds
-
-    Restrictions:
-        Output is can only match input.
-        Packet handling ONLY
-*/
+/**
+ * Copyright (c) 2025 Derek Spaulding
+ * Licensed under MIT License - see LICENSE file
+ */

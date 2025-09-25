@@ -1,4 +1,10 @@
-//© 2025[Derek Spaulding].All rights reserved.
+/**
+ * Copyright (c) 2025 Derek Spaulding
+ * Licensed under MIT License - see LICENSE file
+ * Requires FFmpeg to be installed separately
+ * Users responsible for FFmpeg licensing compliance
+ */
+
 #include "videomanager.h"
 
 #define MAX_STREAMS 10
@@ -739,4 +745,9 @@ void VideoManager::buildVideo() {
 	}
 }
 
-//© 2025[Derek Spaulding].All rights reserved.
+/**
+ * Copyright (c) 2025 Derek Spaulding
+ * Licensed under MIT License - see LICENSE file
+ * Requires FFmpeg to be installed separately
+ * Users responsible for FFmpeg licensing compliance
+ */

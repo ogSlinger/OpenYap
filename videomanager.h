@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) 2025 Derek Spaulding
+ * Licensed under MIT License - see LICENSE file
+ */
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -126,4 +131,9 @@ private:
         return false; // Don't keep segment
     }
 };
-//© 2025[Derek Spaulding].All rights reserved.
+
+/**
+ * Copyright (c) 2025 Derek Spaulding
+ * Licensed under MIT License - see LICENSE file
+ */
+
