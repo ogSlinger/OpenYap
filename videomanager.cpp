@@ -711,6 +711,91 @@ void VideoManager::writeOutLoop() {
 	}
 }
 
+void VideoManager::testWrite() {
+	AVPacket* packet = av_packet_alloc();
+	if (!packet) {
+		return;
+	}
+
+	// Track timestamps for video and audio streams separately
+	int64_t video_pts = 0;
+	int64_t video_dts = 0;
+	int64_t audio_pts = 0;
+	int64_t audio_dts = 0;
+
+	int ret = 0;
+	while (true) {
+		ret = av_read_frame(this->input_ctx, packet);
+		if (ret < 0) {
+			if (ret == AVERROR_EOF) {
+				ret = 0; // End of file is not an error
+			}
+			break;
+		}
+
+		int stream_index = packet->stream_index;
+
+		// Store original duration
+		int64_t duration = packet->duration;
+
+		// If duration is invalid, try to calculate from input stream timebase
+		if (duration <= 0 && this->input_ctx->streams[stream_index]->avg_frame_rate.num > 0) {
+			AVRational frame_rate = this->input_ctx->streams[stream_index]->avg_frame_rate;
+			AVRational time_base = this->input_ctx->streams[stream_index]->time_base;
+			duration = av_rescale_q(1, av_inv_q(frame_rate), time_base);
+		}
+
+		// Set corrected timestamps based on stream type
+		if (stream_index == this->video_stream_idx) {
+			packet->dts = video_dts;
+			packet->pts = video_pts;
+		}
+		else if (stream_index == this->audio_stream_idx) {
+			packet->dts = audio_dts;
+			packet->pts = audio_pts;
+		}
+
+		// Ensure PTS >= DTS
+		if (packet->pts < packet->dts) {
+			packet->pts = packet->dts;
+		}
+
+		// Update duration in case it was modified
+		packet->duration = duration;
+
+		// Rescale timestamps if output timebase differs from input timebase
+		AVRational in_time_base = this->input_ctx->streams[stream_index]->time_base;
+		AVRational out_time_base = this->output_ctx->streams[stream_index]->time_base;
+
+		if (av_cmp_q(in_time_base, out_time_base) != 0) {
+			packet->pts = av_rescale_q(packet->pts, in_time_base, out_time_base);
+			packet->dts = av_rescale_q(packet->dts, in_time_base, out_time_base);
+			packet->duration = av_rescale_q(packet->duration, in_time_base, out_time_base);
+		}
+
+		// Write the frame
+		ret = av_interleaved_write_frame(this->output_ctx, packet);
+		if (ret < 0) {
+			av_packet_unref(packet);
+			break;
+		}
+
+		// Increment timestamps for next packet based on stream type
+		if (stream_index == this->video_stream_idx) {
+			video_pts += duration;
+			video_dts += duration;
+		}
+		else if (stream_index == this->audio_stream_idx) {
+			audio_pts += duration;
+			audio_dts += duration;
+		}
+
+		av_packet_unref(packet);
+	}
+
+	av_packet_free(&packet);
+}
+
 void VideoManager::buildVideo() {
 	// Prelude initialization
 	try {
@@ -735,7 +820,8 @@ void VideoManager::buildVideo() {
 
 	// Runtime Logic
 	try {
-		this->writeOutLoop();
+		//this->writeOutLoop();
+		this->testWrite();
 		this->writeFileTrailer();
 		std::cout << "Reached End" << std::endl;
 	}

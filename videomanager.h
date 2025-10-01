@@ -107,6 +107,8 @@ private:
     void timingCheck(bool is_video, AVPacket* packet, std::queue<VideoSegment*>& outputBuffer);
     void writeOutLoop();
 
+    void testWrite();
+
     template<typename T>
     bool processAudioSamples(AVFrame* frame, T* samples, int* channels,
         int* num_increment, int& peak_threshold_count, float* linear_threshold, int* sample_count) {
