@@ -1,6 +1,7 @@
 # OpenYap
 ### Remove Silence From Video
-### By: Derek Spaulding
+#### By: Derek Spaulding
+
 
 This project is still in development. However, there is some functionality currently as of 2025-10-5. The main.cpp file can be customized from this statement:
 
