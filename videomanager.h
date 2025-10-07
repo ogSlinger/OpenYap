@@ -56,18 +56,12 @@ private:
     float dead_space_buffer;
     int64_t dead_space_buffer_pts;
     int64_t buffer_running_duration;
-    int64_t video_pts_offset;
-    int64_t audio_pts_offset;
-    int64_t video_dts_offset;
-    int64_t audio_dts_offset;
-    int64_t running_video_pts_discrepency;
-    int64_t running_video_dts_discrepency;
+    int64_t video_pts;
+    int64_t video_dts;
+    int64_t audio_pts;
+    int64_t audio_dts;
     int64_t expected_video_duration;
     int64_t expected_audio_duration;
-    int64_t current_video_pts;
-    int64_t current_video_dts;
-    int64_t current_audio_pts;
-    int64_t current_audio_dts;
     
 public:
     VideoManager(const char* input_file, const char* output_file, float vtdb, float dsb);

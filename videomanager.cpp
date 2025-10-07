@@ -32,12 +32,10 @@ VideoManager::VideoManager(const char* input_file, const char* output_file, floa
 	this->reached_end = 0;
 	this->linear_volume_threshold = 0.0f;
 
-	this->video_pts_offset = 0;
-	this->audio_pts_offset = 0;
-	this->video_dts_offset = 0;
-	this->audio_dts_offset = 0;
-	this->running_video_pts_discrepency = 0;
-	this->running_video_dts_discrepency = 0;
+	this->video_pts = 0;;
+	this->video_dts = 0;;
+	this->audio_pts = 0;;
+	this->audio_dts = 0;;
 }
 
 
@@ -363,12 +361,16 @@ void VideoManager::emptyOutfileBuffer(std::queue<VideoSegment*>* outputBuffer) {
 			this->out_pkt_ptr = outputBuffer->front()->queue.front();
 
 			if (is_video) {
-				this->out_pkt_ptr->pts -= this->video_pts_offset;
-				this->out_pkt_ptr->dts -= this->video_dts_offset;
+				this->out_pkt_ptr->pts = this->video_pts;
+				this->out_pkt_ptr->dts = this->video_dts;
+				this->video_pts += this->out_pkt_ptr->duration;
+				this->video_dts += this->out_pkt_ptr->duration;
 			}
 			else {
-				this->out_pkt_ptr->pts -= this->audio_pts_offset;
-				this->out_pkt_ptr->dts -= this->audio_dts_offset;
+				this->out_pkt_ptr->pts = this->audio_pts;
+				this->out_pkt_ptr->dts = this->audio_dts;
+				this->audio_pts += this->out_pkt_ptr->duration;
+				this->audio_dts += this->out_pkt_ptr->duration;
 			}
 			av_interleaved_write_frame(this->output_ctx, out_pkt_ptr);
 			outputBuffer->front()->queue.pop();
@@ -407,14 +409,6 @@ void VideoManager::purgeBuffer(std::queue<VideoSegment*>* outputBuffer) {
 void VideoManager::popHalfQueue(std::queue<VideoSegment*>* outputBuffer) {
 	while (!outputBuffer->empty()) {
 		while (!outputBuffer->front()->queue.empty()) {
-			if (outputBuffer->front()->queue.front()->stream_index == this->video_stream_idx) {
-				this->video_pts_offset += outputBuffer->front()->queue.front()->duration; // HERE
-				this->video_dts_offset += outputBuffer->front()->queue.front()->duration; // HERE
-			}
-			else {
-				this->audio_pts_offset += outputBuffer->front()->queue.front()->duration;
-				this->audio_dts_offset += outputBuffer->front()->queue.front()->duration;
-			}
 			av_packet_free(&outputBuffer->front()->queue.front());
 			outputBuffer->front()->queue.pop();
 		}
@@ -565,53 +559,23 @@ int64_t VideoManager::get_expected_audio_duration() {
 
 void VideoManager::timingCheck(bool is_video, AVPacket* packet, std::queue<VideoSegment*>& outputBuffer) {
 	if (is_video) {
-		packet->pts -= this->running_video_pts_discrepency;
-		packet->dts -= this->running_video_dts_discrepency;
-		
-		if (this->dead_video_pkt_ptr->dts > 0) {
-			if (packet->flags & AV_PKT_FLAG_KEY) {
-				this->running_video_pts_discrepency = 0;
-				this->running_video_dts_discrepency = 0;
-
-				if ((packet->pts - (packet->duration * 2)) > this->dead_video_pkt_ptr->pts) {
-					//this->purgeBuffer(&outputBuffer);
-					this->buffer_running_duration = 0;
-					std::queue<VideoManager::VideoSegment*>* newBuffer = this->copyOutputBuffer(&outputBuffer);
-					this->writeToOutputQueue(newBuffer);
-					this->writeOutBufferState = 0b01;
-					this->invokeQueueSM();
-					this->writeOutBufferState = 0b01;
-					this->invokeQueueSM();
-				}
-				while ((packet->pts - (packet->duration * 2)) > this->dead_video_pkt_ptr->pts) {
-					packet->pts -= this->expected_video_duration;
-					packet->dts -= this->expected_video_duration;
-					packet->duration += this->expected_video_duration;
-					this->running_video_pts_discrepency += this->expected_video_duration;
-					this->running_video_dts_discrepency += this->expected_video_duration;
-				}
-				while (packet->dts < this->last_read_video_pkt->dts) {
-					packet->dts += this->expected_video_duration;
-					this->running_video_dts_discrepency -= this->expected_video_duration;
-				}
-				while (packet->pts < packet->dts) {
-					packet->pts += this->expected_video_duration;
-					this->running_video_pts_discrepency -= this->expected_video_duration;
-				}
-
-				this->last_read_video_pkt->pts = packet->pts;
-				this->last_read_video_pkt->dts = packet->dts;
-				this->dead_video_pkt_ptr->pts = packet->pts + packet->duration;
-				this->dead_video_pkt_ptr->dts = packet->dts + packet->duration;
+		if (packet->flags & AV_PKT_FLAG_KEY) {
+			if ((packet->pts - (packet->duration * 2)) > this->dead_video_pkt_ptr->pts) {
+				this->purgeBuffer(&outputBuffer);
+				this->buffer_running_duration = 0;
+				//std::queue<VideoManager::VideoSegment*>* newBuffer = this->copyOutputBuffer(&outputBuffer);
+				//this->writeToOutputQueue(newBuffer);
+				this->writeOutBufferState = 0b00;
+				this->invokeQueueSM();
+				this->writeOutBufferState = 0b00;
+				this->invokeQueueSM();
 			}
-			else {
-				this->dead_video_pkt_ptr->pts += packet->duration;
-				this->dead_video_pkt_ptr->dts += packet->duration;
-			}
+			this->dead_video_pkt_ptr->pts = packet->pts + packet->duration;
+			this->dead_video_pkt_ptr->dts = packet->dts + packet->duration;
 		}
 		else {
-			this->dead_video_pkt_ptr->pts = packet->pts;
-			this->dead_video_pkt_ptr->dts = packet->dts;
+			this->dead_video_pkt_ptr->pts += packet->duration;
+			this->dead_video_pkt_ptr->dts += packet->duration;
 		}
 	}
 }
@@ -638,7 +602,7 @@ void VideoManager::writeOutLoop() {
 	AVPacket* packet = av_packet_alloc();
 	this->reached_end = av_read_frame(this->input_ctx, packet);
 
-	// Valid data check
+	// Validate packet 
 	while ((!packet) ||  
 		((packet->pts == AV_NOPTS_VALUE || packet->dts == AV_NOPTS_VALUE))) {
 		if (this->reached_end == AVERROR_EOF) {
@@ -711,94 +675,10 @@ void VideoManager::writeOutLoop() {
 	}
 }
 
-void VideoManager::testWrite() {
-	AVPacket* packet = av_packet_alloc();
-	if (!packet) {
-		return;
-	}
-
-	// Track timestamps for video and audio streams separately
-	int64_t video_pts = 0;
-	int64_t video_dts = 0;
-	int64_t audio_pts = 0;
-	int64_t audio_dts = 0;
-
-	int ret = 0;
-	while (true) {
-		ret = av_read_frame(this->input_ctx, packet);
-		if (ret < 0) {
-			if (ret == AVERROR_EOF) {
-				ret = 0; // End of file is not an error
-			}
-			break;
-		}
-
-		int stream_index = packet->stream_index;
-
-		// Store original duration
-		int64_t duration = packet->duration;
-
-		// If duration is invalid, try to calculate from input stream timebase
-		if (duration <= 0 && this->input_ctx->streams[stream_index]->avg_frame_rate.num > 0) {
-			AVRational frame_rate = this->input_ctx->streams[stream_index]->avg_frame_rate;
-			AVRational time_base = this->input_ctx->streams[stream_index]->time_base;
-			duration = av_rescale_q(1, av_inv_q(frame_rate), time_base);
-		}
-
-		// Set corrected timestamps based on stream type
-		if (stream_index == this->video_stream_idx) {
-			packet->dts = video_dts;
-			packet->pts = video_pts;
-		}
-		else if (stream_index == this->audio_stream_idx) {
-			packet->dts = audio_dts;
-			packet->pts = audio_pts;
-		}
-
-		// Ensure PTS >= DTS
-		if (packet->pts < packet->dts) {
-			packet->pts = packet->dts;
-		}
-
-		// Update duration in case it was modified
-		packet->duration = duration;
-
-		// Rescale timestamps if output timebase differs from input timebase
-		AVRational in_time_base = this->input_ctx->streams[stream_index]->time_base;
-		AVRational out_time_base = this->output_ctx->streams[stream_index]->time_base;
-
-		if (av_cmp_q(in_time_base, out_time_base) != 0) {
-			packet->pts = av_rescale_q(packet->pts, in_time_base, out_time_base);
-			packet->dts = av_rescale_q(packet->dts, in_time_base, out_time_base);
-			packet->duration = av_rescale_q(packet->duration, in_time_base, out_time_base);
-		}
-
-		// Write the frame
-		ret = av_interleaved_write_frame(this->output_ctx, packet);
-		if (ret < 0) {
-			av_packet_unref(packet);
-			break;
-		}
-
-		// Increment timestamps for next packet based on stream type
-		if (stream_index == this->video_stream_idx) {
-			video_pts += duration;
-			video_dts += duration;
-		}
-		else if (stream_index == this->audio_stream_idx) {
-			audio_pts += duration;
-			audio_dts += duration;
-		}
-
-		av_packet_unref(packet);
-	}
-
-	av_packet_free(&packet);
-}
-
 void VideoManager::buildVideo() {
 	// Prelude initialization
 	try {
+		std::cout << "Prelude" << std::endl;
 		avformat_close_input(&this->input_ctx);
 		this->setInputContext();
 		this->setAudioStreamIndex();
@@ -820,8 +700,8 @@ void VideoManager::buildVideo() {
 
 	// Runtime Logic
 	try {
-		//this->writeOutLoop();
-		this->testWrite();
+		std::cout << "Write Out Loop" << std::endl;
+		this->writeOutLoop();
 		this->writeFileTrailer();
 		std::cout << "Reached End" << std::endl;
 	}
